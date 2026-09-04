@@ -105,6 +105,13 @@ struct list
    name of the outer structure STRUCT and the member name MEMBER
    of the list element.  See the big comment at the top of the
    file for an example. */
+
+  //  이 매크로는 list_elem 구조체의 포인터를 해당 구조체를 포함하는 외부 구조체의 포인터로 변환합니다. 
+  //  STRUCT는 외부 구조체의 이름이고, MEMBER는 list_elem이 포함된 멤버의 이름입니다. 
+  //  이 매크로는 list_elem을 통해 외부 구조체에 접근할 수 있도록 해줍니다.
+  
+  //  elem 내부의 구성: elem 변수 자체는 prev 포인터(4바이트)와 
+  //  next 포인터(4바이트), 총 8바이트의 메모리 공간을 차지합니다.
 #define list_entry(LIST_ELEM, STRUCT, MEMBER)           \
         ((STRUCT *) ((uint8_t *) &(LIST_ELEM)->next     \
                      - offsetof (STRUCT, MEMBER.next)))

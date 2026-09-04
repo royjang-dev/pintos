@@ -167,16 +167,16 @@ tid_t
 thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
-  struct thread *t;
+  struct thread *t; 
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
-  struct switch_threads_frame *sf;
+  struct switch_threads_frame *sf; 
   tid_t tid;
 
   ASSERT (function != NULL);
 
   /* Allocate thread. */
-  t = palloc_get_page (PAL_ZERO);
+  t = palloc_get_page (PAL_ZERO); 
   if (t == NULL)
     return TID_ERROR;
 
@@ -492,7 +492,7 @@ static struct thread *
 next_thread_to_run (void) 
 {
   if (list_empty (&ready_list))
-    return idle_thread;
+    return idle_thread; // ready_list가 비어있다면 = 실행할 준비가 된 스레드가 없으면, idle_thread를 반환하여 CPU를 유휴 상태로 유지합니다.
   else
     return list_entry (list_pop_front (&ready_list), struct thread, elem);
 }
