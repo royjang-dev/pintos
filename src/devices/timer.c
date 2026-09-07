@@ -30,6 +30,11 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 
+/* Threads blocked in timer_sleep(), sorted by ascending wakeup_tick. */
+static struct list sleep_list;
+/* Earliest wakeup_tick in sleep_list, or INT64_MAX if none. */
+static int64_t next_wakeup;
+
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
@@ -37,6 +42,8 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init (&sleep_list);
+  next_wakeup = INT64_MAX;
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -84,16 +91,34 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+static bool thread_wakeup_tick_less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  struct thread *thread_a = list_entry(a, struct thread, elem);
+  struct thread *thread_b = list_entry(b, struct thread, elem);
+  return thread_a->wakeup_tick < thread_b->wakeup_tick;
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
-timer_sleep (int64_t ticks) 
+timer_sleep(int64_t ticks)
 {
-  int64_t start = timer_ticks ();
+  // int64_t start = timer_ticks();
 
-  ASSERT (intr_get_level () == INTR_ON); // 이 코드는 인터럽트가 켜져 있는 상태에서만 호출되어야 함을 확인하는 어설션입니다.
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  ASSERT (intr_get_level () == INTR_ON);
+
+  if (ticks <= 0) {
+    return;
+  }
+
+  enum intr_level old_level = intr_disable (); // disable interrupts to prevent race conditions
+  struct thread *cur = thread_current (); 
+  cur->wakeup_tick = timer_ticks () + ticks;
+  list_insert_ordered (&sleep_list, &cur->elem, thread_wakeup_tick_less, NULL); // thread_wakeup_tick_less 
+  if (cur->wakeup_tick < next_wakeup) { 
+    next_wakeup = cur->wakeup_tick;
+  }
+  thread_block ();
+  intr_set_level (old_level); // enable interrupts. interrupts를 다시 활성화하는 것은 스레드가 블록 상태에서 깨어난 후에 수행되어야 합니다.
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -168,10 +193,31 @@ timer_print_stats (void)
 
 /* Timer interrupt handler. */
 static void
-timer_interrupt (struct intr_frame *args UNUSED)
+timer_interrupt (struct intr_frame *args UNUSED) // timer_interrupt 함수는 타이머 인터럽트가 발생할 때 호출되는 인터럽트 핸들러입니다. 이 함수는 시스템의 타이머 틱을 증가시키고, 현재 스레드의 상태를 업데이트하며, 필요한 경우 잠자고 있는 스레드를 깨웁니다.
 {
   ticks++;
   thread_tick ();
+  if (ticks < next_wakeup) {
+    return; 
+  }
+
+  for (struct list_elem *e = list_begin (&sleep_list); e != list_end (&sleep_list); ) {
+    struct thread *t = list_entry (e, struct thread, elem);
+    if (t->wakeup_tick > ticks) {
+      break;
+    }
+    list_pop_front (&sleep_list); // sleep_list에서 제거
+    thread_unblock (t); // 스레드 깨우기
+    e = list_begin (&sleep_list); // 다음 스레드 확인
+  }
+
+  if (!list_empty (&sleep_list)) {
+    struct thread *next_thread = list_entry (list_begin (&sleep_list), struct thread, elem);
+    next_wakeup = next_thread->wakeup_tick; // 다음 깨어날 스레드의 tick 업데이트
+  } else {
+    next_wakeup = INT64_MAX; // sleep_list가 비어있으면 next_wakeup 초기화
+  }
+  
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -225,7 +271,7 @@ real_time_sleep (int64_t num, int32_t denom)
       /* We're waiting for at least one full timer tick.  Use
          timer_sleep() because it will yield the CPU to other
          processes. */                
-      timer_sleep (ticks); 
+      timer_sleep (ticks);
     }
   else 
     {
