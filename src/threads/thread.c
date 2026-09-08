@@ -136,8 +136,8 @@ thread_tick (void)
     kernel_ticks++;
 
   /* Enforce preemption. */
-  if (++thread_ticks >= TIME_SLICE) 
-    intr_yield_on_return (); 
+  if (++thread_ticks >= TIME_SLICE)
+    intr_yield_on_return ();
 }
 
 /* Prints thread statistics. */
@@ -199,8 +199,9 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  /* Add to run queue. */
+  /* if the new thread has higher priority than the current thread, yield the CPU to the new thread. */
   thread_unblock (t);
+  thread_preempt ();
 
   return tid;
 }
@@ -238,8 +239,30 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, thread_cmp_priority, NULL);
   t->status = THREAD_READY;
+  intr_set_level (old_level);
+}
+
+/* Yields the cpu if some ready thread has higher priority than the current thread. */
+void
+thread_preempt (void){
+  enum intr_level old_level = intr_disable ();
+
+  if (!list_empty (&ready_list)) {
+    struct thread *top = list_entry (list_begin (&ready_list), struct thread, elem);
+    
+    if (top->priority > thread_current ()->priority) {
+      if (intr_context ()) { // If in interrupt context, yield on return from the interrupt handler.
+        intr_yield_on_return ();
+      } else {
+        intr_set_level (old_level); // Re-enable interrupts before yielding.
+        thread_yield ();
+        return;
+      }
+    }
+  }
+
   intr_set_level (old_level);
 }
 
@@ -314,7 +337,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered (&ready_list, &cur->elem, thread_cmp_priority, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -339,9 +362,10 @@ thread_foreach (thread_action_func *func, void *aux)
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
-thread_set_priority (int new_priority) 
+thread_set_priority (int new_priority)
 {
   thread_current ()->priority = new_priority;
+  thread_preempt ();
 }
 
 /* Returns the current thread's priority. */
@@ -494,10 +518,10 @@ alloc_frame (struct thread *t, size_t size)
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
 static struct thread *
-next_thread_to_run (void) 
+next_thread_to_run (void)
 {
   if (list_empty (&ready_list))
-    return idle_thread; // ready_list가 비어있다면 = 실행할 준비가 된 스레드가 없으면, idle_thread를 반환하여 CPU를 유휴 상태로 유지합니다.
+    return idle_thread;
   else
     return list_entry (list_pop_front (&ready_list), struct thread, elem);
 }

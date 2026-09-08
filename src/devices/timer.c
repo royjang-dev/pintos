@@ -113,12 +113,12 @@ timer_sleep(int64_t ticks)
   enum intr_level old_level = intr_disable (); // disable interrupts to prevent race conditions
   struct thread *cur = thread_current (); 
   cur->wakeup_tick = timer_ticks () + ticks;
-  list_insert_ordered (&sleep_list, &cur->elem, thread_wakeup_tick_less, NULL); // thread_wakeup_tick_less 
+  list_insert_ordered (&sleep_list, &cur->elem, thread_wakeup_tick_less, NULL);
   if (cur->wakeup_tick < next_wakeup) { 
     next_wakeup = cur->wakeup_tick;
   }
   thread_block ();
-  intr_set_level (old_level); // enable interrupts. interrupts를 다시 활성화하는 것은 스레드가 블록 상태에서 깨어난 후에 수행되어야 합니다.
+  intr_set_level (old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -193,7 +193,7 @@ timer_print_stats (void)
 
 /* Timer interrupt handler. */
 static void
-timer_interrupt (struct intr_frame *args UNUSED) // timer_interrupt 함수는 타이머 인터럽트가 발생할 때 호출되는 인터럽트 핸들러입니다. 이 함수는 시스템의 타이머 틱을 증가시키고, 현재 스레드의 상태를 업데이트하며, 필요한 경우 잠자고 있는 스레드를 깨웁니다.
+timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
@@ -206,16 +206,16 @@ timer_interrupt (struct intr_frame *args UNUSED) // timer_interrupt 함수는 �
     if (t->wakeup_tick > ticks) {
       break;
     }
-    list_pop_front (&sleep_list); // sleep_list에서 제거
-    thread_unblock (t); // 스레드 깨우기
-    e = list_begin (&sleep_list); // 다음 스레드 확인
+    list_pop_front (&sleep_list);
+    thread_unblock (t); 
+    e = list_begin (&sleep_list);
   }
 
   if (!list_empty (&sleep_list)) {
     struct thread *next_thread = list_entry (list_begin (&sleep_list), struct thread, elem);
-    next_wakeup = next_thread->wakeup_tick; // 다음 깨어날 스레드의 tick 업데이트
+    next_wakeup = next_thread->wakeup_tick;
   } else {
-    next_wakeup = INT64_MAX; // sleep_list가 비어있으면 next_wakeup 초기화
+    next_wakeup = INT64_MAX;
   }
   
 }

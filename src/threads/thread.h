@@ -96,6 +96,11 @@ struct thread
     /* Owned by devices/timer.c. */
     int64_t wakeup_tick;                /* Tick to wake up the thread. */
 
+    int base_priority;                  /* Base priority before any donations. */
+    struct lock *waiting_lock;          /* The lock that the thread is currently waiting for. */
+    struct list donations;              /* List of threads that have donated priority to this thread. */
+    struct list_elem donation_elem;     /* List element for the donations list. */
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
