@@ -58,7 +58,7 @@ sema_init (struct semaphore *sema, unsigned value)
    interrupts disabled, but if it sleeps then the next scheduled
    thread will probably turn interrupts back on. */
 void
-sema_down (struct semaphore *sema) 
+sema_down (struct semaphore *sema)
 {
   enum intr_level old_level;
 
@@ -200,8 +200,17 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  struct thread *cur = thread_current ();
+ 
+  if (lock->holder != NULL) {
+    cur->waiting_lock = lock;
+    list_insert_ordered(&lock->holder->donations, &cur->donation_elem, thread_cmp_priority, NULL);
+    thread_donate_priority();
+  }
+
   sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+  cur->waiting_lock = NULL;
+  lock->holder = cur;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -223,6 +232,21 @@ lock_try_acquire (struct lock *lock)
     lock->holder = thread_current ();
   return success;
 }
+/* Removes all donation entries for the specified lock from 
+the current thread's donations list. */
+static void lock_remove_donations(struct lock *lock) {
+  struct thread *cur = thread_current ();
+  struct list_elem *e = list_begin(&cur->donations);
+
+  while (e != list_end(&cur->donations)) {
+    struct thread *donor = list_entry(e, struct thread, donation_elem);
+    if (donor->waiting_lock == lock) {
+      e = list_remove(e); // list_remove returns the next element after the removed one
+    } else {
+      e = list_next(e);
+    }
+  }
+}
 
 /* Releases LOCK, which must be owned by the current thread.
 
@@ -235,6 +259,8 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
+  lock_remove_donations(lock);
+  thread_refresh_priority();
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 }

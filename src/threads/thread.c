@@ -360,11 +360,37 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
+/*Propogates priority donations. Its nested donation mechanism. */
+void 
+thread_donate_priority(void) {
+  struct thread *cur = thread_current ();
+  int donate_priority = cur->priority;
+  unsigned DONTATION_DEPTH_LIMIT = 8;
+  
+  for (unsigned depth = 0; depth < DONTATION_DEPTH_LIMIT; depth++) {
+    if (cur->waiting_lock == NULL) break; // No lock to donate to
+
+    struct thread *lock_holder = cur->waiting_lock->holder;
+    if (lock_holder == NULL) break; // No holder to donate to
+
+    if (cur-> priority > donate_priority) {
+      donate_priority = cur->priority; // its for nested donation :).
+    }
+
+    if (lock_holder->priority >= donate_priority) break; // No need to donate if the holder already has higher or equal priority
+
+    lock_holder->priority = donate_priority; // Donate priority
+    
+    cur = lock_holder; // Move up the chain for potential further donations
+  }
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority)
 {
-  thread_current ()->priority = new_priority;
+  thread_current ()->base_priority = new_priority;
+  thread_refresh_priority();
   thread_preempt ();
 }
 
@@ -373,6 +399,26 @@ int
 thread_get_priority (void) 
 {
   return thread_current ()->priority;
+}
+
+bool thread_cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  struct thread *thread_a = list_entry(a, struct thread, donation_elem);
+  struct thread *thread_b = list_entry(b, struct thread, donation_elem);
+  return thread_a->priority > thread_b->priority;
+}
+
+void 
+thread_refresh_priority(void) {
+  struct thread *cur = thread_current ();
+  cur->priority = cur->base_priority; // Reset to base priority
+
+  if (!list_empty (&cur->donations)) {
+    list_sort(&cur->donations, thread_cmp_donation_priority, NULL);
+    struct thread *highest_donor = list_entry (list_front (&cur->donations), struct thread, donation_elem);
+    if (highest_donor->priority > cur->priority) {
+      cur->priority = highest_donor->priority; // Update to the highest donated priority
+    }
+  }
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -492,6 +538,9 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->base_priority = priority;
+  t->waiting_lock = NULL;
+  list_init (&t->donations);
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -587,11 +636,11 @@ schedule (void)
   struct thread *prev = NULL;
 
   ASSERT (intr_get_level () == INTR_OFF);
-  ASSERT (cur->status != THREAD_RUNNING);
+  ASSERT (cur->status != THREAD_RUNNING); 
   ASSERT (is_thread (next));
 
   if (cur != next)
-    prev = switch_threads (cur, next);
+    prev = switch_threads (cur, next); 
   thread_schedule_tail (prev);
 }
 

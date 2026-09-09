@@ -24,6 +24,9 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* Lock structure. */
+struct lock;
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -145,6 +148,7 @@ void thread_preempt(void);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+void thread_refresh_priority (void);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
