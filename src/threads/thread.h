@@ -105,10 +105,12 @@ struct thread
     struct list donations;              /* List of threads that have donated priority to this thread. */
     struct list_elem donation_elem;     /* List element for the donations list. */
 
-    /*Owned by threads/threads.c (advanced schedular) */
+    /*Owned by threads/thread.c (advanced schedular) */
     int nice;                            /* Niceness value for advanced scheduler. */
     fixed_t recent_cpu;                  /* Recent CPU usage for advanced scheduler. */
-   //  fixed_t load_avg;                      /* System load average for advanced scheduler. */
+    
+    /*Owned by threads/thread.c (latency measurement) */
+    int64_t ready_tick;                  /* Tick when the thread became ready. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

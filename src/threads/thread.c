@@ -54,6 +54,11 @@ static long long idle_ticks;    /* # of timer ticks spent idle. */
 static long long kernel_ticks;  /* # of timer ticks in kernel threads. */
 static long long user_ticks;    /* # of timer ticks in user programs. */
 
+/* Latency measurement for threads. Valid only if thread_report_latency is true. */
+static int64_t max_latency;  /* Maximum latency observed among all threads. */
+static int64_t total_latency; /* Total latency accumulated for all threads. */
+static int64_t latency_count;   /* Number of latency measurements taken. */
+
 /* Scheduling. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
@@ -172,6 +177,10 @@ thread_print_stats (void)
 {
   printf ("Thread: %lld idle ticks, %lld kernel ticks, %lld user ticks\n",
           idle_ticks, kernel_ticks, user_ticks);
+  
+  if (thread_report_latency && latency_count > 0)  
+    printf ("Thread latency: max %lld ticks, average %lld ticks\n",
+            max_latency, total_latency / latency_count);
 }
 
 /* Creates a new kernel thread named NAME with the given initial
@@ -224,6 +233,8 @@ thread_create (const char *name, int priority,
   sf = alloc_frame (t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
+
+  t->ready_tick = timer_ticks (); // Record the tick when the thread became ready.
 
   /* if the new thread has higher priority than the current thread, yield the CPU to the new thread. */
   thread_unblock (t);
@@ -335,6 +346,18 @@ thread_exit (void)
 #ifdef USERPROG
   process_exit ();
 #endif
+
+  if (thread_report_latency) {
+    struct thread *cur = thread_current ();
+    int64_t latency = timer_ticks () - cur->ready_tick; // Calculate the latency for the current thread.
+    printf("Thread %s completed in %lld ticks.\n", cur->name, latency);
+
+    total_latency += latency;
+    if (latency > max_latency) {
+      max_latency = latency;
+    }
+    latency_count++;
+  }
 
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
@@ -492,7 +515,7 @@ mlfqs_update_priority (struct thread *t, void *aux UNUSED) {
     return; // Idle thread's priority should not be updated
   
   int p = PRI_MAX - FP_TO_INT_ZERO(DIV_MIX(t->recent_cpu, 4)) - (t->nice * 2);
-  t->priority = p < PRI_MIN ? PRI_MIN : (p > PRI_MAX ? PRI_MAX : p); // Clamp priority within valid range
+  t->priority = p < PRI_MIN ? PRI_MIN : (p > PRI_MAX ? PRI_MAX : p);
 }
 
 /* recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice */
