@@ -201,8 +201,8 @@ lock_acquire (struct lock *lock)
   ASSERT (!lock_held_by_current_thread (lock));
 
   struct thread *cur = thread_current ();
- 
-  if (lock->holder != NULL) {
+
+  if (!thread_mlfqs && lock->holder != NULL) {
     cur->waiting_lock = lock;
     list_insert_ordered(&lock->holder->donations, &cur->donation_elem, thread_cmp_priority, NULL);
     thread_donate_priority();
@@ -259,8 +259,11 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
-  lock_remove_donations(lock);
-  thread_refresh_priority();
+  if (!thread_mlfqs){
+    lock_remove_donations(lock);
+    thread_refresh_priority();
+  }
+  
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 }
@@ -360,9 +363,7 @@ sema_cmp_priority(const struct list_elem *a, const struct list_elem *b, void *au
 
    An interrupt handler cannot acquire a lock, so it does not
    make sense to try to signal a condition variable within an
-   interrupt handler. 
-   이 함수는 cond_wait()에서 대기 중인 스레드가 있으면 그 중 하나를 깨우는 역할을 합니다. 
-   LOCK은 이 함수를 호출하기 전에 반드시 소유하고 있어야 합니다.*/
+   interrupt handler. */
 void
 cond_signal (struct condition *cond, struct lock *lock UNUSED) 
 {

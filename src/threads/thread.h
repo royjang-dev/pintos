@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "fixed-point.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -104,6 +105,11 @@ struct thread
     struct list donations;              /* List of threads that have donated priority to this thread. */
     struct list_elem donation_elem;     /* List element for the donations list. */
 
+    /*Owned by threads/threads.c (advanced schedular) */
+    int nice;                            /* Niceness value for advanced scheduler. */
+    fixed_t recent_cpu;                  /* Recent CPU usage for advanced scheduler. */
+   //  fixed_t load_avg;                      /* System load average for advanced scheduler. */
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -149,7 +155,7 @@ void thread_preempt(void);
 int thread_get_priority (void);
 void thread_set_priority (int);
 void thread_refresh_priority (void);
-
+void thread_donate_priority(void);
 int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
