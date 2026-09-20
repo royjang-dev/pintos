@@ -85,6 +85,8 @@ static void mlfqs_update_priority (struct thread *t, void *aux UNUSED);
 static void mlfqs_update_recent_cpu (struct thread *t, void *aux UNUSED);
 static void mlfqs_update_load_avg (void);
 
+#define clamp(v, min, max) ((v) < (min) ? (min) : ((v) > (max) ? (max) : (v)))
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -142,6 +144,7 @@ thread_tick (void)
   /* Update statistics. */
   if (t == idle_thread)
     idle_ticks++;
+
 #ifdef USERPROG
   else if (t->pagedir != NULL)
     user_ticks++;
@@ -150,17 +153,17 @@ thread_tick (void)
     kernel_ticks++;
 
   if (thread_mlfqs) {
-    struct thread *cur = thread_current ();
-    if (cur != idle_thread)
-      cur->recent_cpu = ADD_MIX (cur->recent_cpu, 1);
+    // struct thread *cur = thread_current ();
+    if (t != idle_thread)
+      t->recent_cpu = ADD_MIX (t->recent_cpu, 1);
 
-    int64_t t = timer_ticks ();
+    int64_t timerticks_since_osboosted = timer_ticks ();
     
-    if (t % TIMER_FREQ == 0) {
+    if (timerticks_since_osboosted > 0 && timerticks_since_osboosted % TIMER_FREQ == 0) {
       mlfqs_update_load_avg ();
       thread_foreach (mlfqs_update_recent_cpu, NULL);
     }
-    if (t % TIME_SLICE == 0) {
+    if (timerticks_since_osboosted % TIME_SLICE == 0) {
       thread_foreach (mlfqs_update_priority, NULL);
       list_sort (&ready_list, thread_cmp_priority, NULL);
     }
@@ -519,6 +522,7 @@ mlfqs_update_priority (struct thread *t, void *aux UNUSED) {
   
   int p = PRI_MAX - FP_TO_INT_ZERO(DIV_MIX(t->recent_cpu, 4)) - (t->nice * 2);
   t->priority = p < PRI_MIN ? PRI_MIN : (p > PRI_MAX ? PRI_MAX : p);
+  // t->priority = clamp(p, PRI_MIN, PRI_MAX);
 }
 
 /* recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice */

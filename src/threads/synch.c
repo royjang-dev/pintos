@@ -255,9 +255,7 @@ static void lock_remove_donations(struct lock *lock) {
 
   while (e != list_end(&cur->donations)) {
     struct thread *donor = list_entry(e, struct thread, donation_elem);
-    printf("Checking donor: %s\n", donor->name);
     if (donor->waiting_lock == lock) {
-      printf("Removing donor: %s\n", donor->name);
       e = list_remove(e); // list_remove returns the next element after the removed one
     } else {
       e = list_next(e);
