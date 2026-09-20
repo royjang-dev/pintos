@@ -202,16 +202,16 @@ tid_t
 thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
-  struct thread *t; 
+  struct thread *t;
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
-  struct switch_threads_frame *sf; 
+  struct switch_threads_frame *sf;
   tid_t tid;
 
   ASSERT (function != NULL);
 
   /* Allocate thread. */
-  t = palloc_get_page (PAL_ZERO); 
+  t = palloc_get_page (PAL_ZERO);
   if (t == NULL)
     return TID_ERROR;
 
@@ -417,18 +417,18 @@ thread_donate_priority(void) {
   unsigned DONTATION_DEPTH_LIMIT = 8;
   
   for (unsigned depth = 0; depth < DONTATION_DEPTH_LIMIT; depth++) {
-    if (cur->waiting_lock == NULL) break; // No lock to donate to
+    if (cur->waiting_lock == NULL) break;
 
     struct thread *lock_holder = cur->waiting_lock->holder;
     if (lock_holder == NULL) break; // No holder to donate to
 
     if (cur-> priority > donate_priority) {
-      donate_priority = cur->priority; // its for nested donation :).
+      donate_priority = cur->priority; // its for nested donation.
     }
 
-    if (lock_holder->priority >= donate_priority) break; // No need to donate if the holder already has higher or equal priority
+    if (lock_holder->priority >= donate_priority) break;
 
-    lock_holder->priority = donate_priority; // Donate priority
+    lock_holder->priority = donate_priority; 
     
     cur = lock_holder; // Move up the chain for potential further donations
   }
@@ -441,9 +441,12 @@ thread_set_priority (int new_priority)
   if (thread_mlfqs)
     return;
 
+  enum intr_level old_level = intr_disable ();
+
   thread_current ()->base_priority = new_priority;
   thread_refresh_priority();
   thread_preempt ();
+  intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -453,7 +456,7 @@ thread_get_priority (void)
   return thread_current ()->priority;
 }
 
-static bool thread_cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+bool thread_cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
   struct thread *thread_a = list_entry(a, struct thread, donation_elem);
   struct thread *thread_b = list_entry(b, struct thread, donation_elem);
   return thread_a->priority > thread_b->priority;
@@ -737,7 +740,7 @@ schedule (void)
   ASSERT (is_thread (next));
 
   if (cur != next)
-    prev = switch_threads (cur, next); 
+    prev = switch_threads (cur, next);
   thread_schedule_tail (prev);
 }
 

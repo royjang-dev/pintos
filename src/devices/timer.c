@@ -40,7 +40,7 @@ static int64_t next_wakeup;
 void
 timer_init (void) 
 {
-  pit_configure_channel (0, 2, TIMER_FREQ);
+  pit_configure_channel (0, 2, TIMER_FREQ); // Configure PIT channel 0, mode 2 (rate generator) with the desired frequency
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
   list_init (&sleep_list);
   next_wakeup = INT64_MAX;
@@ -100,6 +100,7 @@ static bool thread_wakeup_tick_less(const struct list_elem *a, const struct list
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
+     
 timer_sleep(int64_t ticks)
 {
   // int64_t start = timer_ticks();
@@ -114,7 +115,7 @@ timer_sleep(int64_t ticks)
   struct thread *cur = thread_current (); 
   cur->wakeup_tick = timer_ticks () + ticks;
   list_insert_ordered (&sleep_list, &cur->elem, thread_wakeup_tick_less, NULL);
-  if (cur->wakeup_tick < next_wakeup) { 
+  if (cur->wakeup_tick < next_wakeup) {
     next_wakeup = cur->wakeup_tick;
   }
   thread_block ();

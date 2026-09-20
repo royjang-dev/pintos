@@ -61,11 +61,11 @@ void
 sema_down (struct semaphore *sema)
 {
   enum intr_level old_level;
+  old_level = intr_disable ();
 
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
 
-  old_level = intr_disable ();
   while (sema->value == 0)
     {
       list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_cmp_priority, NULL);
@@ -196,6 +196,7 @@ lock_init (struct lock *lock)
 void
 lock_acquire (struct lock *lock)
 {
+  enum intr_level old_level = intr_disable ();
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
@@ -204,14 +205,27 @@ lock_acquire (struct lock *lock)
 
   if (!thread_mlfqs && lock->holder != NULL) {
     cur->waiting_lock = lock;
-    list_insert_ordered(&lock->holder->donations, &cur->donation_elem, thread_cmp_priority, NULL);
+    list_insert_ordered(&lock->holder->donations, &cur->donation_elem, thread_cmp_donation_priority, NULL);
     thread_donate_priority();
   }
 
   sema_down (&lock->semaphore);
   cur->waiting_lock = NULL;
   lock->holder = cur;
+  intr_set_level (old_level);
 }
+
+/* Returns true if the current thread holds LOCK, false
+   otherwise.  (Note that testing whether some other thread holds
+   a lock would be racy.) */
+bool
+lock_held_by_current_thread (const struct lock *lock) 
+{
+  ASSERT (lock != NULL);
+
+  return lock->holder == thread_current ();
+}
+
 
 /* Tries to acquires LOCK and returns true if successful or false
    on failure.  The lock must not already be held by the current
@@ -232,6 +246,7 @@ lock_try_acquire (struct lock *lock)
     lock->holder = thread_current ();
   return success;
 }
+
 /* Removes all donation entries for the specified lock from 
 the current thread's donations list. */
 static void lock_remove_donations(struct lock *lock) {
@@ -240,7 +255,9 @@ static void lock_remove_donations(struct lock *lock) {
 
   while (e != list_end(&cur->donations)) {
     struct thread *donor = list_entry(e, struct thread, donation_elem);
+    printf("Checking donor: %s\n", donor->name);
     if (donor->waiting_lock == lock) {
+      printf("Removing donor: %s\n", donor->name);
       e = list_remove(e); // list_remove returns the next element after the removed one
     } else {
       e = list_next(e);
@@ -256,6 +273,7 @@ static void lock_remove_donations(struct lock *lock) {
 void
 lock_release (struct lock *lock) 
 {
+  enum intr_level old_level = intr_disable ();
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
@@ -266,19 +284,9 @@ lock_release (struct lock *lock)
   
   lock->holder = NULL;
   sema_up (&lock->semaphore);
+  intr_set_level (old_level);
 }
 
-/* Returns true if the current thread holds LOCK, false
-   otherwise.  (Note that testing whether some other thread holds
-   a lock would be racy.) */
-bool
-lock_held_by_current_thread (const struct lock *lock) 
-{
-  ASSERT (lock != NULL);
-
-  return lock->holder == thread_current ();
-}
-
 /* this struct is used to implement condition variables. Each condition variable 
 has a list of these, one per waiting thread. Each semaphore_elem contains a semaphore 
 that the waiting thread will block on until it is signaled. */
