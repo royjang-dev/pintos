@@ -423,7 +423,7 @@ thread_donate_priority(void) {
     if (cur->waiting_lock == NULL) break;
 
     struct thread *lock_holder = cur->waiting_lock->holder;
-    if (lock_holder == NULL) break; // No holder to donate to
+    if (lock_holder == NULL) break;
 
     if (cur-> priority > donate_priority) {
       donate_priority = cur->priority; // its for nested donation.

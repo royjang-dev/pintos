@@ -251,7 +251,7 @@ lock_try_acquire (struct lock *lock)
 the current thread's donations list. */
 static void lock_remove_donations(struct lock *lock) {
   struct thread *cur = thread_current ();
-  struct list_elem *e = list_begin(&cur->donations);
+  struct list_elem *e = list_begin(&cur->donations); //
 
   while (e != list_end(&cur->donations)) {
     struct thread *donor = list_entry(e, struct thread, donation_elem);
