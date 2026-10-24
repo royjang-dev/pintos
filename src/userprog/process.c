@@ -456,9 +456,25 @@ setup_stack (void **esp, int argc, char **argv)
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true); // kpage is the kernel page to be mapped at the top of the user stack
+      if (success){
         *esp = PHYS_BASE;
+        uint8_t *sp = *esp;
+
+        for (int i = argc - 1; i >= 0; i--)
+        {
+          size_t arg_len = strlen(argv[i]) + 1;
+
+          if (sp - arg_len < (uint8_t *) PHYS_BASE - PGSIZE)
+            return false;
+
+          sp -= arg_len;
+          memcpy(sp, argv[i], arg_len);
+          argv[i] = (char *) sp;
+        }
+
+        *esp = sp;
+      }
       else
         palloc_free_page (kpage);
     }
