@@ -219,7 +219,7 @@ thread_create (const char *name, int priority,
     return TID_ERROR;
 
   /* Initialize thread. */
-  init_thread (t, name, priority);
+  init_thread (t, name, priority); 
   tid = t->tid = allocate_tid ();
 
   /* Stack frame for kernel_thread(). */
@@ -290,7 +290,7 @@ thread_preempt (void){
   enum intr_level old_level = intr_disable ();
 
   if (!list_empty (&ready_list)) {
-    struct thread *top = list_entry (list_begin (&ready_list), struct thread, elem);
+    struct thread *top = list_entry (list_begin (&ready_list), struct thread, elem); // Get the thread with the highest priority from the ready list.
     
     if (top->priority > thread_current ()->priority) {
       if (intr_context ()) { // If in interrupt context, yield on return from the interrupt handler.
