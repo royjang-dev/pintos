@@ -456,10 +456,10 @@ setup_stack (void **esp, int argc, char **argv)
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true); // kpage is the kernel page to be mapped at the top of the user stack
-      if (success){
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      if (success) {
         *esp = PHYS_BASE;
-        uint8_t *sp = *esp;
+        uint8_t *sp = (uint8_t *) *esp;
 
         for (int i = argc - 1; i >= 0; i--)
         {
@@ -470,8 +470,33 @@ setup_stack (void **esp, int argc, char **argv)
 
           sp -= arg_len;
           memcpy(sp, argv[i], arg_len);
-          argv[i] = (char *) sp;
+          argv[i] = (char *) sp; 
         }
+
+        sp = (uint8_t *)((uintptr_t)sp & ~3);
+
+        char *null_ptr = NULL;
+        sp -= sizeof(null_ptr);
+        memcpy(sp, &null_ptr, sizeof(null_ptr));
+
+        for (int i = argc - 1; i >= 0; i--)
+          {
+            sp -= sizeof(argv[i]);
+            memcpy(sp, &argv[i], sizeof(argv[i]));
+          }
+
+        char **argv_user = (char **) sp;
+
+        sp -= sizeof(argv_user);
+        memcpy(sp, &argv_user, sizeof(argv_user));
+
+
+        sp -= sizeof(argc);
+        memcpy(sp, &argc, sizeof(argc));
+
+        uint32_t fake_return = 0;
+        sp -= sizeof(fake_return);
+        memcpy(sp, &fake_return, sizeof(fake_return));
 
         *esp = sp;
       }
@@ -480,6 +505,7 @@ setup_stack (void **esp, int argc, char **argv)
     }
   return success;
 }
+
 
 /* Adds a mapping from user virtual address UPAGE to kernel
    virtual address KPAGE to the page table.
