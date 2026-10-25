@@ -14,6 +14,7 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -22,6 +23,13 @@ static thread_func start_process NO_RETURN;
 static bool load (const char *file_name, int argc, char **argv, void (**eip) (void), void **esp);
 
 #define MAX_ARGS 128
+
+/* Passed from process_execute() to start_process(). */
+struct exec_args
+  {
+    char *cmdline;
+    struct child_process *cp;
+  };
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -42,6 +50,10 @@ process_execute (const char *file_name)
   name[i] = '\0';
 
   char *fn_copy;
+  char thread_name[16];
+  char *prog, *save_ptr;
+  struct exec_args *args;
+  struct child_process *cp;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -52,23 +64,64 @@ process_execute (const char *file_name)
 
   strlcpy (fn_copy, file_name, PGSIZE);
 
+<<<<<<< HEAD
   /* Create a new thread to execute with only the first word in file_name aka cmd. */
   tid = thread_create (name, PRI_DEFAULT, start_process, fn_copy); 
 
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
 
+=======
+  args = malloc (sizeof *args);
+  cp = malloc (sizeof *cp);
+  if (args == NULL || cp == NULL)
+    {
+      free (args);
+      free (cp);
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  cp->exit_status = -1;
+  cp->is_exited = false;
+  cp->is_orphan = false;
+  sema_init (&cp->wait_sema, 0);
+  sema_init (&cp->load_sema, 0);
+  args->cmdline = fn_copy;
+  args->cp = cp;
+
+  strlcpy (thread_name, file_name, sizeof thread_name);
+  prog = strtok_r (thread_name, " ", &save_ptr);
+  if (prog == NULL)
+    prog = thread_name;
+
+  /* Create a new thread to execute FILE_NAME. */
+  tid = thread_create (prog, PRI_DEFAULT, start_process, args); 
+  if (tid == TID_ERROR)
+    {
+      palloc_free_page (fn_copy);
+      free (args);
+      free (cp);
+      return TID_ERROR;
+    }
+  cp->tid = tid;
+  list_push_back (&thread_current ()->children, &cp->child_elem); 
+>>>>>>> cabfbcc (argument passing)
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *args_)
 {
-  char *file_name = file_name_;
+  struct exec_args *args = args_;
+  char *file_name = args->cmdline;
+  struct thread *cur = thread_current ();
   struct intr_frame if_;
   bool success;
+
+  cur->cp = args->cp;
+  free (args);
 
   char *argv[MAX_ARGS];
   int argc = 0;
@@ -78,6 +131,7 @@ start_process (void *file_name_)
   {
     if (argc == MAX_ARGS) {
       palloc_free_page (file_name);
+      cur->exit_status = -1;
       thread_exit ();
     }
     argv[argc++] = token;
@@ -85,6 +139,7 @@ start_process (void *file_name_)
   
   if (argc == 0) {
     palloc_free_page (file_name);
+    cur->exit_status = -1;
     thread_exit ();
   }
 
@@ -98,6 +153,7 @@ start_process (void *file_name_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
+  cur->exit_status = success ? 0 : -1;
   if (!success) 
     thread_exit ();
 
@@ -121,15 +177,45 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  #ifdef USERPROG
+  struct thread *cur = thread_current ();
+  struct child_process *child = NULL;
+  struct list_elem *e;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e)) 
+    {
+      struct child_process *cp = list_entry (e, struct child_process, child_elem);
+      if (cp->tid == child_tid) 
+        {
+          child = cp;
+          break;
+        }
+    }
+
+  if (child == NULL) 
+    return -1;
+
+  sema_down (&child->wait_sema);
+
+  int status = child->exit_status;
+
+  list_remove (&child->child_elem);
+  free (child);
+  return status;
+  #else
+    return -1;
+  
+  #endif
 }
+
 
 /* Free the current process's resources. */
 void
 process_exit (void)
 {
+  #ifdef USERPROG
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
@@ -149,6 +235,13 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+  
+    if (cur->cp != NULL) {
+      cur->cp->is_exited = true;
+      cur->cp->exit_status = cur->exit_status;
+      sema_up (&cur->cp->wait_sema);
+    }
+  #endif
 }
 
 /* Sets up the CPU for running user code in the current
@@ -489,26 +582,38 @@ setup_stack (void **esp, int argc, char **argv)
 
         sp = (uint8_t *)((uintptr_t)sp & ~3);
 
+        size_t meta_size = (argc + 1) * sizeof (char *) + 3 * sizeof (uint32_t);
+        if (sp - meta_size < (uint8_t *) PHYS_BASE - PGSIZE)
+          return false;
+
         char *null_ptr = NULL;
+        if (sp - sizeof(null_ptr) < (uint8_t *) PHYS_BASE - PGSIZE)
+          return false;
         sp -= sizeof(null_ptr);
         memcpy(sp, &null_ptr, sizeof(null_ptr));
 
         for (int i = argc - 1; i >= 0; i--)
           {
+            if (sp - sizeof(argv[i]) < (uint8_t *) PHYS_BASE - PGSIZE)
+              return false;
             sp -= sizeof(argv[i]);
             memcpy(sp, &argv[i], sizeof(argv[i]));
           }
 
         char **argv_user = (char **) sp;
-
+        if (sp - sizeof(argv_user) < (uint8_t *) PHYS_BASE - PGSIZE)
+          return false;
         sp -= sizeof(argv_user);
         memcpy(sp, &argv_user, sizeof(argv_user));
 
-
+        if (sp - sizeof(argc) < (uint8_t *) PHYS_BASE - PGSIZE)
+          return false;
         sp -= sizeof(argc);
         memcpy(sp, &argc, sizeof(argc));
 
         uint32_t fake_return = 0;
+        if (sp - sizeof(fake_return) < (uint8_t *) PHYS_BASE - PGSIZE)
+          return false;
         sp -= sizeof(fake_return);
         memcpy(sp, &fake_return, sizeof(fake_return));
 

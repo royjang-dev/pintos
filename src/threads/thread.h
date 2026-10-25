@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "fixed-point.h"
+#include "threads/synch.h" 
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -118,17 +119,36 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+<<<<<<< HEAD
 
     struct list child_list;
     struct child_info *child_self;
     int exit_status;
 
     struct file *fd_table[128];
+=======
+    struct list children;                /* List of child processes. */
+    struct child_process *cp;           /* Pointer to the child process structure. */
+>>>>>>> cabfbcc (argument passing)
 #endif
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+    int exit_status;                     /* Exit status of the thread. */
   };
+
+#ifdef USERPROG
+struct child_process {
+   tid_t tid;                           /* Thread identifier of the child process. */
+   int exit_status;                     /* Exit status of the child process. */
+   struct semaphore wait_sema;          /* Semaphore for waiting on the child process. */
+   struct semaphore load_sema;          /* Semaphore for loading the child process. */
+   bool is_exited;                        /* Whether the child process has exited. */
+   bool is_orphan;                        /* Whether the child process has been orphaned. */
+   struct list_elem child_elem;         /* List element for the parent's list of child processes. */
+};
+#endif
+
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
