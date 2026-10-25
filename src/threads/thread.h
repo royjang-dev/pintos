@@ -28,6 +28,9 @@ typedef int tid_t;
 /* Lock structure. */
 struct lock;
 
+struct file;			/* Added in project 2. */
+struct child_info;
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -115,6 +118,12 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+
+    struct list child_list;
+    struct child_info *child_self;
+    int exit_status;
+
+    struct file *fd_table[128];
 #endif
 
     /* Owned by thread.c. */
