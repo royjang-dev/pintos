@@ -30,6 +30,17 @@ static bool load (const char *file_name, int argc, char **argv, void (**eip) (vo
 tid_t
 process_execute (const char *file_name) 
 {
+  if (file_name == NULL || strlen (file_name) > PGSIZE)  //Checks file_name, if it's nullptr or bigger than 4kb
+    return TID_ERROR;
+
+  char name[16];
+  int i = 0;
+  while (i < 15 && file_name[i] != '\0' && file_name[i] != ' ') {	//Only extracting the first word of the cmd
+    name[i] = file_name[i];
+    i++;
+  }
+  name[i] = '\0';
+
   char *fn_copy;
   tid_t tid;
 
@@ -38,12 +49,15 @@ process_execute (const char *file_name)
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
+
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy); 
+  /* Create a new thread to execute with only the first word in file_name aka cmd. */
+  tid = thread_create (name, PRI_DEFAULT, start_process, fn_copy); 
+
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+
   return tid;
 }
 
