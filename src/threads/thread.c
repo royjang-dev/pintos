@@ -635,6 +635,9 @@ init_thread (struct thread *t, const char *name, int priority)
   t->base_priority = priority;
   t->waiting_lock = NULL;
   list_init (&t->donations);
+#ifdef USERPROG
+  list_init (&t->children);
+#endif
   if (t == initial_thread)
     {
       t->nice = 0;
