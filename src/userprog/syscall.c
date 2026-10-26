@@ -22,26 +22,80 @@ syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-/* Validates that a user pointer is within the user address space and mapped in the page directory. */
-void
-validate_user_ptr (const void *uaddr, size_t size)
+// /* Validates that a user pointer is within the user address space and mapped in the page directory. */
+// void
+// validate_user_ptr (const void *uaddr, size_t size)
+// {
+//   if (uaddr == NULL || !is_user_vaddr (uaddr) || !is_user_vaddr ((char *)uaddr + size - 1)) 
+//     {
+//       exit (-1); 
+//     }
+
+//   struct thread *cur = thread_current ();
+//   const void *curr_page = pg_round_down (uaddr);
+//   const void *last_page = pg_round_down ((char *)uaddr + size - 1);
+
+//   while (curr_page <= last_page) 
+//     {
+//       if (pagedir_get_page (cur->pagedir, curr_page) == NULL) 
+//         {
+//           exit (-1); 
+//         }
+//       curr_page = (char *)curr_page + PGSIZE; 
+//     }
+// }
+
+/* Reads a byte at user virtual address UADDR. UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static uint8_t
+read_user_byte (const void *uaddr)
 {
-  if (uaddr == NULL || !is_user_vaddr (uaddr) || !is_user_vaddr ((char *)uaddr + size - 1)) 
-    {
-      exit (-1); 
-    }
+  if (!is_user_vaddr (uaddr))
+    sys_exit (-1);
+  int b = get_user (uaddr);
+  if (b == -1)
+    sys_exit (-1);
+  return b;
+}
 
-  struct thread *cur = thread_current ();
-  const void *curr_page = pg_round_down (uaddr); 
-  const void *last_page = pg_round_down ((char *)uaddr + size - 1);
+static uint32_t
+read_user_word (const void *uaddr) 
+{
+  uint32_t v = 0;
+  for (int i = 0; i < 4; i++)
+    v |= (uint32_t) read_user_byte ((const uint8_t *) uaddr + i) << (8 * i);
+  return v;
+}
 
-  while (curr_page <= last_page) 
+static void
+check_user_string (const char *s)
+{
+  for (const char *p = s; read_user_byte (p) != '\0'; p++)
+    continue;
+}
+
+/* Checks that a user buffer is valid for access.
+   BUF is the starting address, SIZE is the number of bytes,
+   and WRITABLE indicates if the buffer will be written to.
+   Exits if the buffer is invalid. */
+static void
+check_user_buffer (const void *buf, unsigned size, bool writable)
+{
+  if (size == 0)
+    return;
+  const uint8_t *p = buf;
+  if (!is_user_vaddr (p) || size > (uintptr_t) PHYS_BASE - (uintptr_t) p)
+    sys_exit (-1);
+  const uint8_t *end = p + size;
+  while (p < end)
     {
-      if (pagedir_get_page (cur->pagedir, curr_page) == NULL) 
-        {
-          exit (-1); 
-        }
-      curr_page = (char *)curr_page + PGSIZE; 
+      int b = get_user (p);
+      if (b == -1)
+        sys_exit (-1);
+      if (writable && !put_user ((uint8_t *) p, b)) // Check if writing to user memory fails
+        sys_exit (-1);
+      p = (const uint8_t *) pg_round_down (p) + PGSIZE;
     }
 }
 
@@ -103,8 +157,7 @@ int write (int fd, const void *buffer, unsigned size)
 
 /* Reads a byte at user virtual address UADDR.
    UADDR must be below PHYS_BASE.
-   Returns the byte value if successful, -1 if a segfault
-   occurred. */
+   Returns the byte value if successful, -1 if a segfault occurred. */
 static int
 get_user (const uint8_t *uaddr)
 {
