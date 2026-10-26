@@ -4,29 +4,25 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
-<<<<<<< HEAD
 #include "devices/shutdown.h"
 #include "userprog/pagedir.h"
 
 static void syscall_handler (struct intr_frame *);
-static void validate_user_ptr (const void *uaddr);
+void validate_user_ptr (const void *uaddr, size_t size);
 static void halt (void);
-static void exit(int status);
-=======
-#include "userprog/pagedir.h" 
-
-static void syscall_handler (struct intr_frame *);
 void exit (int status);
 int write (int fd, const void *buffer, unsigned size);
-void validate_user_ptr (const void *uaddr, size_t size);
->>>>>>> cabfbcc (argument passing)
+
+struct lock filesys_lock;  /* Lock for synchronizing access to the file system. */
 
 void
 syscall_init (void) 
 {
+  lock_init(&filesys_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
+/* Validates that a user pointer is within the user address space and mapped in the page directory. */
 void
 validate_user_ptr (const void *uaddr, size_t size)
 {
@@ -72,6 +68,10 @@ syscall_handler (struct intr_frame *f)
       f->eax = write (fd, buffer, size); 
       break;
 
+    case SYS_HALT:
+      halt ();
+      break;
+
     default:
       exit (-1);
     }
@@ -88,12 +88,17 @@ void exit (int status)
   thread_exit ();
 }
 
-<<<<<<< HEAD
-static void 
-validate_user_ptr(const void *uaddr)
+int write (int fd, const void *buffer, unsigned size) 
 {
-  if (uaddr == NULL || !is_user_vaddr(uaddr))
-    exit (-1);
+  validate_user_ptr (buffer, size);
+
+  if (fd == 1) 
+    {
+      putbuf (buffer, size);
+      return size;
+    }
+
+  return -1;
 }
 
 /* Reads a byte at user virtual address UADDR.
@@ -133,34 +138,5 @@ halt (void)
   shutdown_power_off ();
 }
 
-static void
-exit (int status)
-{
-  struct thread *curr = thread_current ();
-  curr->status = status;
-
-  printf ("%d: exit(%d)\n", curr->tid, status);
-
-  thread_exit ();
-}
-
 static tid_t
 exec (const char *cmd_line);
-=======
-
-int write (int fd, const void *buffer, unsigned size) 
-{
-  validate_user_ptr (buffer, size); 
-
-  if (fd == 1) 
-  {
-    putbuf (buffer, size);
-    return size;
-  }
-    
-  // 추후 파일 시스템(Project 2 후반부)을 구현하면 fd가 1이 아닐 때 
-  // 실제 파일에 쓰는 로직(file_write)이 여기에 추가
-  return -1;
-}
-
->>>>>>> cabfbcc (argument passing)

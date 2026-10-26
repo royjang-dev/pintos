@@ -26,10 +26,10 @@ static bool load (const char *file_name, int argc, char **argv, void (**eip) (vo
 
 /* Passed from process_execute() to start_process(). */
 struct exec_args
-  {
-    char *cmdline;
-    struct child_process *cp;
-  };
+{
+  char *cmdline; 
+  struct child_info *cp;
+};
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -41,37 +41,27 @@ process_execute (const char *file_name)
   if (file_name == NULL || strlen (file_name) > PGSIZE)  //Checks file_name, if it's nullptr or bigger than 4kb
     return TID_ERROR;
 
-  char name[16];
+  char name[16]; // Buffer for storing the extracted program name
   int i = 0;
-  while (i < 15 && file_name[i] != '\0' && file_name[i] != ' ') {	//Only extracting the first word of the cmd
+  while (i < 15 && file_name[i] != '\0' && file_name[i] != ' ') {
     name[i] = file_name[i];
     i++;
   }
   name[i] = '\0';
 
   char *fn_copy;
-  char thread_name[16];
-  char *prog, *save_ptr;
   struct exec_args *args;
-  struct child_process *cp;
+  struct child_info *cp;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
+  fn_copy = palloc_get_page(PAL_ZERO | PAL_USER);
   if (fn_copy == NULL)
     return TID_ERROR;
 
   strlcpy (fn_copy, file_name, PGSIZE);
 
-<<<<<<< HEAD
-  /* Create a new thread to execute with only the first word in file_name aka cmd. */
-  tid = thread_create (name, PRI_DEFAULT, start_process, fn_copy); 
-
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
-
-=======
   args = malloc (sizeof *args);
   cp = malloc (sizeof *cp);
   if (args == NULL || cp == NULL)
@@ -89,13 +79,9 @@ process_execute (const char *file_name)
   args->cmdline = fn_copy;
   args->cp = cp;
 
-  strlcpy (thread_name, file_name, sizeof thread_name);
-  prog = strtok_r (thread_name, " ", &save_ptr);
-  if (prog == NULL)
-    prog = thread_name;
+  /* Create a new thread to execute with only the first word in file_name aka cmd. */
+  tid = thread_create (name, PRI_DEFAULT, start_process, args); 
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (prog, PRI_DEFAULT, start_process, args); 
   if (tid == TID_ERROR)
     {
       palloc_free_page (fn_copy);
@@ -104,8 +90,8 @@ process_execute (const char *file_name)
       return TID_ERROR;
     }
   cp->tid = tid;
-  list_push_back (&thread_current ()->children, &cp->child_elem); 
->>>>>>> cabfbcc (argument passing)
+  list_push_back (&thread_current ()->child_list, &cp->child_elem); 
+
   return tid;
 }
 
@@ -120,7 +106,7 @@ start_process (void *args_)
   struct intr_frame if_;
   bool success;
 
-  cur->cp = args->cp;
+  cur->child_self = args->cp;
   free (args);
 
   char *argv[MAX_ARGS];
@@ -149,7 +135,7 @@ start_process (void *args_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   // success = load (file_name, &if_.eip, &if_.esp);
-  success = load (argv[0], argc, argv, &if_.eip, &if_.esp);
+  success = load (argv[0], argc, argv, &if_.eip, &if_.esp); 
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -181,12 +167,12 @@ process_wait (tid_t child_tid)
 {
   #ifdef USERPROG
   struct thread *cur = thread_current ();
-  struct child_process *child = NULL;
+  struct child_info *child = NULL;
   struct list_elem *e;
 
-  for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e)) 
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list); e = list_next (e)) 
     {
-      struct child_process *cp = list_entry (e, struct child_process, child_elem);
+      struct child_info *cp = list_entry (e, struct child_info, child_elem);
       if (cp->tid == child_tid) 
         {
           child = cp;
@@ -236,10 +222,10 @@ process_exit (void)
       pagedir_destroy (pd);
     }
   
-    if (cur->cp != NULL) {
-      cur->cp->is_exited = true;
-      cur->cp->exit_status = cur->exit_status;
-      sema_up (&cur->cp->wait_sema);
+    if (cur->child_self != NULL) {
+      cur->child_self->is_exited = true;
+      cur->child_self->exit_status = cur->exit_status;
+      sema_up (&cur->child_self->wait_sema);
     }
   #endif
 }

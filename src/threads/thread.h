@@ -116,29 +116,24 @@ struct thread
     /*Owned by threads/thread.c (latency measurement) */
     int64_t ready_tick;                  /* Tick when the thread became ready. */
 
-#ifdef USERPROG
+   #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-<<<<<<< HEAD
 
-    struct list child_list;
-    struct child_info *child_self;
-    int exit_status;
+    struct list child_list; /* List of child processes. */
+    struct child_info *child_self; /* Pointer to this thread's child info structure. */
+    int exit_status; /* Exit status of this thread. */
 
-    struct file *fd_table[128];
-=======
-    struct list children;                /* List of child processes. */
-    struct child_process *cp;           /* Pointer to the child process structure. */
->>>>>>> cabfbcc (argument passing)
-#endif
+    struct file *fd_table[128]; /* File descriptor table for this thread. */
+    struct file *exec_file; /* Executable file of this thread. */
+   #endif
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
-    int exit_status;                     /* Exit status of the thread. */
   };
 
 #ifdef USERPROG
-struct child_process {
+struct child_info {
    tid_t tid;                           /* Thread identifier of the child process. */
    int exit_status;                     /* Exit status of the child process. */
    struct semaphore wait_sema;          /* Semaphore for waiting on the child process. */
@@ -146,6 +141,7 @@ struct child_process {
    bool is_exited;                        /* Whether the child process has exited. */
    bool is_orphan;                        /* Whether the child process has been orphaned. */
    struct list_elem child_elem;         /* List element for the parent's list of child processes. */
+   bool load_success;                     /* Whether the child process loaded successfully. */
 };
 #endif
 
