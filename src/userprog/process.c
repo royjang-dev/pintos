@@ -474,7 +474,7 @@ load (const char *file_name, int argc, char **argv, void (**eip) (void), void **
 
  done:
   if (success) {
-    file_deny_write (file);
+    file_deny_write (file); // Deny write access to the executable file after successful load
     t->exec_file = file;
   }
   else

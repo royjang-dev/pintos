@@ -5,9 +5,6 @@
              +--------------------------+
 
 ---- GROUP ----
-
->> Fill in the names and email addresses of your group members.
-
 Seryong Jang <royjang1996@gmail.com>
 Ben Do <email@domain.example>
 
@@ -51,6 +48,8 @@ Ben Do <email@domain.example>
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+struct file *exec_file;      /* 실행 중인 자신의 실행 파일. */
+쓰기 금지는 그 struct file이 열려 있는 동안만 유지됩니다. 프로세스가 끝날 때까지 이 파일을 열어 두어야 하니, 포인터를 저장할 곳이 필요합니다.
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
