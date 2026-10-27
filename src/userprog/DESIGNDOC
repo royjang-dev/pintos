@@ -25,23 +25,37 @@ Ben Do <bd1228@kaist.ac.kr>
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
-userprog/process.c:
 
-  #define MAX_ARGS 128
-    Maximum number of words in a command line.
+In userprog/process.c
+#define MAX_ARGS 128
 
-  struct exec_args {
-    char *cmdline;              /* copy of the command line, one page */
-    struct child_info *cp;      /* record shared with the parent */
-    struct pipe *stdin_pipe;    /* pipe read end for child's fd 0, or NULL */
-  };
-    This is needed for start_process(). thread_create() passes only one pointer so we put them all needed into this . Argument passing uses cmdline, and cp and stdin_pipe
-    are for exec/wait and pipe.
+struct exec_args {
+  char *cmdline; 
+  struct child_info *cp;
+};
 
-  static bool load (const char *file_name, int argc, char **argv,
-                    void (**eip) (void), void **esp);
-  static bool setup_stack (void **esp, int argc, char **argv);
-    These functions get argc and argv. load() loads an ELF executable from FILE_NAME into the current thread. And setup_stack() put the arguments on the new user stack.
+In thread/thread.h
+struct list child_list;			/* List of child processes. */
+struct child_info *cp;		    /* Pointer to this thread's child info structure. */
+int exit_status;			    /* Exit status of this thread. */
+
+struct file *exec_file;			/* Executable file of this thread. */
+
+In thread/thread.h after struct thread
+struct child_info {
+   tid_t tid;                           /* Thread identifier of the child process. */
+   int exit_status;                     /* Exit status of the child process. */
+   struct semaphore wait_sema;          /* Semaphore for waiting on the child process. */
+   struct semaphore load_sema;          /* Semaphore for loading the child process. */
+   bool is_exited;                        /* Whether the child process has exited. */
+   bool is_orphan;                        /* Whether the child process has been orphaned. */
+   struct list_elem child_elem;         /* List element for the parent's list of child processes. */
+   bool load_success;                     /* Whether the child process loaded successfully. */
+};
+
+MAX_ARGS is to define the upper bound on the argument count. We know that a command will not exceed 128 charaters.
+struct exec_args is to bundle the two values passed from process_execute() to start_process() via thread_create()'s single aux.
+
 
 ---- ALGORITHMS ----
 
@@ -49,14 +63,67 @@ userprog/process.c:
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+The command line is parsed in two stages with different purposes. 1. process_execute() extracts only what it needs to identify the child,
+and prepares the bookkeeping. 2. start_process() tokenises the full command line into argv[] and hands it to load().
+
+process_execute() first copies the command line into a kernel page with strlcpy, then extracts only the first token into a 16 byte buffer
+to use as the thread name. We then allocate exec_args and child_info to initialize the synchronization plumbing. We then initialize all
+memebers of child_info (cp) and then set all the members in exec_args. We then pass exec_args in thread_create() because it accepts a single
+void *aux. Without it, the child could not receive both fn_copy and cp. We then create the thread and the add it to the child's list.
+
+start_process() receives the copy and tokenizes it with strtok_r(cmdline, " ", &save_ptr), filling argv[argc++] in forward order.
+
+setup_stack() builds the initial user stack top to bottom from PHYS_BASE.
+1. Push the argument strings in reverse order (argv[argc-1] first), so argv[0]'s string ends up at the lowest string address.
+2. Align the stack pointer to a 4 byte boundary.
+3. Push the NULL terminator for argv[].
+4. Push the argument pointers in reverse order, so argv[0]'s pointer ends up at the lowest address of the pointer array.
+5. Push argv.
+6. Push argc.
+7. Push a fake return address of 0, so _start sees a normal C call frame.
+========================================================================
+                      USER STACK MEMORY LAYOUT (echo hi)
+========================================================================
+   Address (Example)      |  Memory Data Content      | C Type / Meaning
+--------------------------+---------------------------+-----------------
+ LOW ADDRESS (Moves down towards 0x00000000)
+--------------------------+---------------------------+-----------------
+   0xbfffffd4             |  0x00000000               | uint32_t (Fake Return Address)
+--------------------------+---------------------------+-----------------
+   0xbfffffd8             |  2                        | int argc (Argument Count)
+--------------------------+---------------------------+-----------------
+   0xbfffffdc             |  0xbfffffe0               | char **argv (Pointer to argv array)
+--------------------------+---------------------------+-----------------
+   0xbfffffe0             |  0xbffffff8               | char *argv[0] -> pointer to "echo"
+--------------------------+---------------------------+-----------------
+   0xbfffffe4             |  0xbffffffd               | char *argv[1] -> pointer to "hi"
+--------------------------+---------------------------+-----------------
+   0xbfffffe8             |  0x00000000               | char *argv[2] (Null Pointer Sentinel)
+--------------------------+---------------------------+-----------------
+   0xbfffffec             |  0x00, 0x00, 0x00, 0x00   | Word Alignment (4-byte Padding)
+--------------------------+---------------------------+-----------------
+   0xbffffff8             |  'e', 'c', 'h', 'o', '\0' | argument string 0 ("echo")
+--------------------------+---------------------------+-----------------
+   0xbffffffd             |  'h', 'i', '\0'           | argument string 1 ("hi")
+--------------------------+---------------------------+-----------------
+ HIGH ADDRESS (PHYS_BASE = 0xc0000000 Boundary Right Above)
+========================================================================
+
+To avoid overflowing the stack page, setup_stack checks (sp - size >= (uint8_t *) PHYS_BASE - PGSIZE) and returns false, which fails load(),
+killing the child if load_sucess fails before every push. This guarantees no write ever falls below the single mapped stack page.
 
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
 
+strtok() stores its continuation state in a static buffer, which is shared across all callers. Pintos is a multithreaded kernel, so two processes running process_execute() concurrently would clobber each other's parse state. strtok_r() takes an explicit char **save_ptr on its own stack, making the function reentrant and thread-safe. Pintos mandates reentrant library calls everywhere for this reason.
+
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
 >> separation.  Identify at least two advantages of the Unix approach.
+
+1. Separation of mechanism and policy. The kernel implements exec of a single program with an already-resolved argv, quoting rules, escape sequences, glob expansion, variable substitution, and pipelines live in user-space shells and can be changed without touching the kernel.
+2. Composability and re-entrancy. Since the shell is a normal user program, a program can spawn subprocesses with without a shell in the middle or use different shells with different syntax. Pintos's kernel-side parsing forces one fixed grammar for every program.
 
                  SYSTEM CALLS
                  ============
@@ -66,7 +133,44 @@ userprog/process.c:
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+thread.h:
 
+  #define FD_MAX 128
+    Size of each process's file descriptor table.
+
+  struct thread (inside #ifdef USERPROG), new members:
+    struct list child_list;         /* children we exec'ed */
+    struct child_info *child_self;  /* our own record, seen by parent */
+    int exit_status;                /* value passed to exit(), or -1 */
+    struct fd_entry *fd_table[FD_MAX];
+    struct file *exec_file;         /* our executable, kept open */
+  child_list/child_self implement wait and exec. fd_table holds the
+  open files. exec_file keeps writes to our own binary denied.
+
+  struct child_info {
+    tid_t tid;
+    int exit_status;
+    struct semaphore wait_sema;     /* upped when the child exits */
+    struct semaphore load_sema;     /* upped when loading is done */
+    bool is_exited;
+    bool is_orphan;                 /* parent is gone */
+    struct list_elem child_elem;
+    bool load_success;
+  };
+  One record per child, allocated with malloc, shared by parent and
+  child so either can outlive the other.
+
+syscall.c:
+
+  struct lock filesys_lock;
+    Serializes all calls into filesys/. Also used by load() and
+    process_exit().
+
+  enum fd_type { FD_FILE, FD_PIPE_R, FD_PIPE_W };
+  struct fd_entry { enum fd_type type; struct file *file;
+                    struct pipe *pipe; };
+    What an fd slot points to, so read/write/close can tell a file
+    from a pipe end.
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
