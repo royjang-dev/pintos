@@ -6,7 +6,7 @@
 
 ---- GROUP ----
 Seryong Jang <royjang1996@gmail.com>
-Ben Do <email@domain.example>
+Ben Do <bd1228@kaist.ac.kr>
 
 ---- PRELIMINARIES ----
 
@@ -25,12 +25,30 @@ Ben Do <email@domain.example>
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+userprog/process.c:
+
+  #define MAX_ARGS 128
+    Maximum number of words in a command line.
+
+  struct exec_args {
+    char *cmdline;              /* copy of the command line, one page */
+    struct child_info *cp;      /* record shared with the parent */
+    struct pipe *stdin_pipe;    /* pipe read end for child's fd 0, or NULL */
+  };
+    This is needed for start_process(). thread_create() passes only one pointer so we put them all needed into this . Argument passing uses cmdline, and cp and stdin_pipe
+    are for exec/wait and pipe.
+
+  static bool load (const char *file_name, int argc, char **argv,
+                    void (**eip) (void), void **esp);
+  static bool setup_stack (void **esp, int argc, char **argv);
+    These functions get argc and argv. load() loads an ELF executable from FILE_NAME into the current thread. And setup_stack() put the arguments on the new user stack.
 
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
+
 
 ---- RATIONALE ----
 
@@ -48,8 +66,7 @@ Ben Do <email@domain.example>
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
-struct file *exec_file;      /* 실행 중인 자신의 실행 파일. */
-쓰기 금지는 그 struct file이 열려 있는 동안만 유지됩니다. 프로세스가 끝날 때까지 이 파일을 열어 두어야 하니, 포인터를 저장할 곳이 필요합니다.
+
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a

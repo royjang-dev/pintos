@@ -64,7 +64,7 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
 
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (fn_copy, file_name, PGSIZE); // Copy the file name into the allocated page
 
   args = malloc (sizeof *args);
   cp = malloc (sizeof *cp);
