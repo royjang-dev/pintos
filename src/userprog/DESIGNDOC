@@ -175,7 +175,8 @@ syscall.c:
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
-Every struct thread carries a fixed array (struct fd_entry *fd_table[FD_MAX]), where FD_MAX is 128. Each non NULL slot points to a heap-allocated
+Every struct thread carries a fixed array (struct fd_entry *fd_table[FD_MAX]), 
+where FD_MAX is 128. Each non NULL slot points to a heap-allocated
 struct fd_entry {
 	enum fd_type;
 	struct file *file;
@@ -184,14 +185,12 @@ struct fd_entry {
 where the fd_type enum are the following: FD_FILE, FD_PIPE_R, FD_PIPE_W.
 
 When we call sys_open(), the kernel calls filesys_open(), allocates (using malloc()) an
-fd_entry with fd_type as FD_FILE, scans fd_table from index 2 for the first NULL, installs the entry, and returns the index.
+fd_entry with fd_type as FD_FILE, scans fd_table from index 2 for the first NULL, 
+installs the entry, and returns the index.
 
 pipe() installs two fd_entries, one for reader and one writer, pointing at the same struct pipe.
-
 get_entry(fd) returns fd_table and get_file(fd) returns the file only if fd_type == FD_FILE. 
-
 FDs 0 and 1 are conventionally for std input nad std output, so no fd_entry is ever installed in those indices.
-
 FDs are unique only within a single process: slot 3 in process A and slot 3 in process B are unrelated. Each table lives inside a different
 struct thread. So isolation is automatic.
 
@@ -224,7 +223,8 @@ Any fault in the check phase kills the process via sys_exit(-1). The actual bulk
 >> for improvement in these numbers, and how much?
 We dont call pagedir_get_page(). We just inspect one byte per page with
 get_user() and the MMU does the page table walk.
-4,096 bytes: 1 if the buffer starts exactly on a page boundary, 2 otherwise (it always inspects two pages when it is not aligned).
+4,096 bytes: 1 if the buffer starts exactly on a page boundary, 2 otherwise 
+(it always inspects two pages when it is not aligned).
 2 bytes: 1, or 2 if the two bytes straddle a page boundary.
 
 We dont see much room for improvement. One per page is the minimum
@@ -233,7 +233,8 @@ would be 4,096 probes for the full page case.
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
-We named it sys_wait() in our implementation. sys_wait() calls process_wait(). process_execute() created a child_info for
+We named it sys_wait() in our implementation. sys_wait() calls process_wait(). 
+process_execute() created a child_info for
 the child and pushed it on the parent's child_list, so process_wait()
 searches that list for the tid. If it is not there (not a child, or
 already waited for) it returns -1. Otherwise it does sema_down() on
@@ -288,8 +289,13 @@ pointer.
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
-We implemented child_info to have semaphore, load_sema that starts at 0 and a load_success flag. After thread_create(), process_execute() calls sema_down() on load_sema. The child's start_process() runs load(), stores the result
-in load_success, and does sema_up(). The failure paths (bad command line, too many arguments, load() fails..) all go through one helper, load_failed(), which also does the sema_up(), so the parent cannot get stuck. If load_success is false, exec returns -1.
+We implemented child_info to have semaphore, load_sema that starts at 0 
+and a load_success flag. After thread_create(), process_execute() calls 
+sema_down() on load_sema. The child's start_process() runs load(), stores 
+the result in load_success, and does sema_up(). The failure paths 
+(bad command line, too many arguments, load() fails..) all go through one 
+helper, load_failed(), which also does the sema_up(), so the parent cannot 
+get stuck. If load_success is false, exec returns -1.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
