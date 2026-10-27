@@ -18,9 +18,12 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *file_name, int argc, char **argv, void (**eip) (void), void **esp);
+static void release_child (struct child_info *cp);
+static void load_failed (struct thread *cur, char *page) NO_RETURN; 
 
 #define MAX_ARGS 128
 
@@ -56,7 +59,7 @@ process_execute (const char *file_name)
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page(PAL_ZERO | PAL_USER);
+  fn_copy = palloc_get_page(PAL_ZERO);
   if (fn_copy == NULL)
     return TID_ERROR;
 
@@ -74,6 +77,7 @@ process_execute (const char *file_name)
   cp->exit_status = -1;
   cp->is_exited = false;
   cp->is_orphan = false;
+  cp->load_success = false;
   sema_init (&cp->wait_sema, 0);
   sema_init (&cp->load_sema, 0);
   args->cmdline = fn_copy;
@@ -90,7 +94,15 @@ process_execute (const char *file_name)
       return TID_ERROR;
     }
   cp->tid = tid;
-  list_push_back (&thread_current ()->child_list, &cp->child_elem); 
+  list_push_back (&thread_current ()->child_list, &cp->child_elem);
+
+  sema_down (&cp->load_sema);
+  if (!cp->load_success)
+  {
+    list_remove (&cp->child_elem);
+    release_child (cp);
+    return TID_ERROR;
+  }
 
   return tid;
 }
@@ -116,17 +128,13 @@ start_process (void *args_)
        token = strtok_r (NULL, " ", &save_ptr))
   {
     if (argc == MAX_ARGS) {
-      palloc_free_page (file_name);
-      cur->exit_status = -1;
-      thread_exit ();
+      load_failed (cur, file_name);
     }
     argv[argc++] = token;
   }
   
   if (argc == 0) {
-    palloc_free_page (file_name);
-    cur->exit_status = -1;
-    thread_exit ();
+    load_failed (cur, file_name);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -138,10 +146,21 @@ start_process (void *args_)
   success = load (argv[0], argc, argv, &if_.eip, &if_.esp); 
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  // palloc_free_page (file_name);
   cur->exit_status = success ? 0 : -1;
-  if (!success) 
-    thread_exit ();
+
+  if (!success) {
+    load_failed (cur, file_name);
+  }
+  else {
+    palloc_free_page (file_name);
+    if (cur->child_self != NULL) {
+      cur->child_self->load_success = true;
+      sema_up (&cur->child_self->load_sema);
+    }
+  }
+  
+  // sema_up (&cur->child_self->load_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -197,38 +216,66 @@ process_wait (tid_t child_tid)
 }
 
 
-/* Free the current process's resources. */
 void
 process_exit (void)
 {
-  #ifdef USERPROG
   struct thread *cur = thread_current ();
-  uint32_t *pd;
+  if (cur->child_self != NULL)
+    printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
-  pd = cur->pagedir;
-  if (pd != NULL) 
+  lock_acquire (&filesys_lock);
+  for (int fd = 2; fd < 128; fd++)
+  {
+    if (cur->fd_table[fd] != NULL)
     {
-      /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
-      cur->pagedir = NULL;
-      pagedir_activate (NULL);
-      pagedir_destroy (pd);
+      file_close (cur->fd_table[fd]);
+      cur->fd_table[fd] = NULL;
     }
-  
-    if (cur->child_self != NULL) {
-      cur->child_self->is_exited = true;
-      cur->child_self->exit_status = cur->exit_status;
-      sema_up (&cur->child_self->wait_sema);
-    }
+  }
+  if (cur->exec_file != NULL)
+  {
+    file_close (cur->exec_file);
+    cur->exec_file = NULL;
+  }
+  lock_release (&filesys_lock);
+
+  struct list_elem *e = list_begin (&cur->child_list);
+  while (e != list_end (&cur->child_list))
+  {
+    struct child_info *c = list_entry (e, struct child_info, child_elem);
+    e = list_remove (e);
+    release_child (c);
+  }
+
+  #ifdef USERPROG
+  uint32_t *pd = cur->pagedir;
+  if (pd != NULL) 
+  {
+    cur->pagedir = NULL;
+    pagedir_activate (NULL);
+    pagedir_destroy (pd);
+  }
   #endif
+
+  if (cur->child_self != NULL)
+  {
+    struct child_info *cp = cur->child_self;
+    enum intr_level old = intr_disable ();
+    
+    cp->exit_status = cur->exit_status;
+    cp->is_exited = true;
+    bool orphan = cp->is_orphan;
+    
+    sema_up (&cp->wait_sema); 
+    intr_set_level (old);
+    
+    if (orphan)
+      free (cp);
+      
+    cur->child_self = NULL;
+  }
 }
+
 
 /* Sets up the CPU for running user code in the current
    thread.
@@ -328,6 +375,7 @@ load (const char *file_name, int argc, char **argv, void (**eip) (void), void **
   off_t file_ofs;
   bool success = false;
   int i;
+  lock_acquire (&filesys_lock);
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -425,9 +473,26 @@ load (const char *file_name, int argc, char **argv, void (**eip) (void), void **
   success = true;
 
  done:
+  if (success) {
+    file_deny_write (file);
+    t->exec_file = file;
+  }
+  else
+    file_close (file);
+
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  lock_release (&filesys_lock);
   return success;
+}
+
+static void
+load_failed (struct thread *cur, char *page)
+{
+  palloc_free_page (page);
+  cur->exit_status = -1;
+  cur->child_self->load_success = false;
+  sema_up (&cur->child_self->load_sema);
+  thread_exit ();
 }
 
 /* load() helpers. */
@@ -630,4 +695,19 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+/* Releases a child_info structure.
+   If the child has exited, it is freed.
+   Otherwise, it is marked as orphan. */
+static void
+release_child (struct child_info *cp)
+{
+  enum intr_level old = intr_disable ();
+  bool exited = cp->is_exited;
+  if (!exited)
+    cp->is_orphan = true;
+  intr_set_level (old);
+  if (exited)
+    free (cp);
 }

@@ -6,12 +6,30 @@
 #include "threads/vaddr.h"
 #include "devices/shutdown.h"
 #include "userprog/pagedir.h"
+#include "userprog/process.h"
+#include "filesys/file.h"
+#include "filesys/filesys.h"
+#include "devices/input.h"
+#include "lib/limits.h"
+
+#define MAX_FD 128
+#define ARG(n) read_user_word ((uint32_t *) f->esp + (n))
 
 static void syscall_handler (struct intr_frame *);
-void validate_user_ptr (const void *uaddr, size_t size);
-static void halt (void);
-void exit (int status);
-int write (int fd, const void *buffer, unsigned size);
+// void validate_user_ptr (const void *uaddr, size_t size);
+static int sys_write (int fd, const void *buffer, unsigned size);
+static int sys_read (int fd, void *buffer, unsigned size);
+static bool sys_create (const char *file, unsigned initial_size);
+static int sys_open (const char *file);
+static int sys_filesize (int fd);
+static void sys_seek (int fd, unsigned position);
+static unsigned sys_tell (int fd);
+static int sys_exec (const char *cmd_line);
+static void sys_exit (int status);
+static void sys_close (int fd);
+static void sys_halt (void);
+static int get_user (const uint8_t *uaddr);
+static bool put_user (uint8_t *udst, uint8_t byte);
 
 struct lock filesys_lock;  /* Lock for synchronizing access to the file system. */
 
@@ -102,57 +120,203 @@ check_user_buffer (const void *buf, unsigned size, bool writable)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  validate_user_ptr (f->esp, sizeof(uint32_t));
+  // validate_user_ptr (f->esp, sizeof(uint32_t));
+
+  if (!is_user_vaddr (f->esp))
+    sys_exit (-1);
+  check_user_buffer (f->esp, sizeof(uint32_t), false);
 
   int syscall_num = *(int *)f->esp;
 
   switch (syscall_num) 
-    {
+  {
+    case SYS_EXEC:
+      f->eax = sys_exec ((const char *) ARG(1)); 
+      break;
     case SYS_EXIT:
-      validate_user_ptr ((uint32_t *)f->esp + 1, sizeof(uint32_t)); 
-      exit (*((int *)f->esp + 1)); 
+      sys_exit ((int) ARG(1)); 
       break;
-
-    case SYS_WRITE: 
-      validate_user_ptr ((uint32_t *)f->esp + 1, sizeof(uint32_t) * 3);
-      int fd = *((int *)f->esp + 1);
-      const void *buffer = *((const void **)f->esp + 2);
-      unsigned size = *((unsigned *)f->esp + 3);
-
-      f->eax = write (fd, buffer, size); 
-      break;
-
+    case SYS_WRITE:
+      {
+        int fd = (int) ARG(1);
+        const void *buffer = (const void *) ARG(2);
+        unsigned size = (unsigned) ARG(3);
+        f->eax = sys_write (fd, buffer, size); 
+        break;
+      }
     case SYS_HALT:
-      halt ();
+      sys_halt ();
       break;
-
+    case SYS_WAIT:
+      f->eax = process_wait ((tid_t) ARG(1));
+      break;
+    case SYS_READ:
+      {
+        int fd = (int) ARG(1);
+        void *buffer = (void *) ARG(2);
+        unsigned size = (unsigned) ARG(3);
+        f->eax = sys_read (fd, buffer, size);
+        break;
+      }
+    case SYS_CREATE:
+      f->eax = sys_create ((const char *) ARG(1), (unsigned) ARG(2));
+      break;
+    case SYS_OPEN:
+      f->eax = sys_open ((const char *) ARG(1));
+      break;
+    case SYS_FILESIZE:
+      f->eax = sys_filesize ((int) ARG(1));
+      break;
+    case SYS_SEEK:
+      sys_seek ((int) ARG(1), (unsigned) ARG(2));
+      break;
+    case SYS_TELL:
+      f->eax = sys_tell ((int) ARG(1));
+      break;
+    case SYS_CLOSE:
+      sys_close ((int) ARG(1));
+      break;
     default:
-      exit (-1);
-    }
+      sys_exit (-1);
+  }
 }
 
+static int sys_exec (const char *cmd)
+{
+  check_user_string (cmd);
+  return process_execute (cmd);
+}
 
-void exit (int status) 
+void sys_exit (int status) 
 {
   struct thread *cur = thread_current ();
   cur->exit_status = status;
-
-  printf ("%s: exit(%d)\n", cur->name, status);
-
+  // printf ("%s: exit(%d)\n", cur->name, status);
   thread_exit ();
 }
 
-int write (int fd, const void *buffer, unsigned size) 
+static void sys_halt (void)
 {
-  validate_user_ptr (buffer, size);
+  shutdown_power_off ();
+}
 
-  if (fd == 1) 
+
+static bool sys_create (const char *name, unsigned size)
+{
+  check_user_string (name);
+  lock_acquire (&filesys_lock);
+  bool ok = filesys_create (name, size);
+  lock_release (&filesys_lock);
+  return ok;
+}
+
+static struct file *get_file (int fd)
+{
+  if (fd < 2 || fd >= MAX_FD)
+    return NULL;
+  return thread_current ()->fd_table[fd];
+}
+
+static int sys_open (const char *name)
+{
+  check_user_string (name);
+  lock_acquire (&filesys_lock);
+  struct file *f = filesys_open (name);
+  lock_release (&filesys_lock);
+  if (f == NULL)
+    return -1;
+  struct thread *cur = thread_current ();
+  for (int fd = 2; fd < MAX_FD; fd++)
+    if (cur->fd_table[fd] == NULL)
+      {
+        cur->fd_table[fd] = f;
+        return fd;
+      }
+  lock_acquire (&filesys_lock);
+  file_close (f);
+  lock_release (&filesys_lock);
+  return -1;
+}
+
+static int sys_filesize (int fd)
+{
+  struct file *f = get_file (fd);
+  if (f == NULL) return -1;
+  lock_acquire (&filesys_lock);
+  int n = file_length (f);
+  lock_release (&filesys_lock);
+  return n;
+}
+
+static int sys_read (int fd, void *buf, unsigned size)
+{
+  check_user_buffer (buf, size, true);
+  if (fd == STDIN_FILENO)
     {
-      putbuf (buffer, size);
+      uint8_t *p = buf;
+      for (unsigned i = 0; i < size; i++)
+        p[i] = input_getc ();
       return size;
     }
+  struct file *f = get_file (fd);
+  if (f == NULL) return -1;  
+  lock_acquire (&filesys_lock);
+  int n = file_read (f, buf, size);
+  lock_release (&filesys_lock);
+  return n;
+}
 
-  return -1;
+static int sys_write (int fd, const void *buf, unsigned size)
+{
+  check_user_buffer (buf, size, false);
+  if (fd == STDOUT_FILENO)
+    {
+      const char *p = buf;
+      unsigned left = size;
+      while (left > 0)
+        {
+          unsigned n = left < 512 ? left : 512;
+          putbuf (p, n);
+          p += n; left -= n;
+        }
+      return size;
+    }
+  struct file *f = get_file (fd);
+  if (f == NULL) return -1; 
+  lock_acquire (&filesys_lock);
+  int n = file_write (f, buf, size);
+  lock_release (&filesys_lock);
+  return n;
+}
+
+static void sys_seek (int fd, unsigned pos)
+{
+  struct file *f = get_file (fd);
+  if (f == NULL) return;
+  if ((int) pos < 0) pos = INT_MAX;
+  lock_acquire (&filesys_lock);
+  file_seek (f, pos);
+  lock_release (&filesys_lock);
+}
+
+static unsigned sys_tell (int fd)
+{
+  struct file *f = get_file (fd);
+  if (f == NULL) return (unsigned) -1;
+  lock_acquire (&filesys_lock);
+  unsigned n = file_tell (f);
+  lock_release (&filesys_lock);
+  return n;
+}
+
+static void sys_close (int fd)
+{
+  struct file *f = get_file (fd);
+  if (f == NULL) return; 
+  lock_acquire (&filesys_lock);
+  file_close (f);
+  lock_release (&filesys_lock);
+  thread_current ()->fd_table[fd] = NULL;
 }
 
 /* Reads a byte at user virtual address UADDR.
@@ -181,15 +345,3 @@ put_user (uint8_t *udst, uint8_t byte)
 
   return error_code != -1;
 }
-
-
-
-
-static void
-halt (void)
-{
-  shutdown_power_off ();
-}
-
-static tid_t
-exec (const char *cmd_line);
