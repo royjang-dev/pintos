@@ -182,3 +182,8 @@ inumber (int fd)
 {
   return syscall1 (SYS_INUMBER, fd);
 }
+
+int pipe (int *fds)
+{
+  return syscall1 (SYS_PIPE, fds);
+}
