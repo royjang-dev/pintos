@@ -25,11 +25,13 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+#define FD_MAX 128                      /* Maximum number of file descriptors per thread. */
 
 /* Lock structure. */
 struct lock;
 
 struct file;			/* Added in project 2. */
+struct fd_entry;
 struct child_info;
 
 /* A kernel thread or user process.
@@ -124,7 +126,8 @@ struct thread
     struct child_info *child_self; /* Pointer to this thread's child info structure. */
     int exit_status; /* Exit status of this thread. */
 
-    struct file *fd_table[128]; /* File descriptor table for this thread. */
+   //  struct file *fd_table[128]; /* File descriptor table for this thread. */
+    struct fd_entry *fd_table[FD_MAX]; /* File descriptor table for this thread. */
     struct file *exec_file; /* Executable file of this thread. */
    #endif
 

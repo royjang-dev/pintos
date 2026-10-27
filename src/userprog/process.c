@@ -32,6 +32,7 @@ struct exec_args
 {
   char *cmdline; 
   struct child_info *cp;
+  struct pipe *stdin_pipe;
 };
 
 /* Starts a new thread running a user program loaded from
@@ -83,12 +84,18 @@ process_execute (const char *file_name)
   args->cmdline = fn_copy;
   args->cp = cp;
 
+  args->stdin_pipe = pipe_find_pair(thread_current());
+  if (args->stdin_pipe != NULL)
+    pipe_add_reader(args->stdin_pipe);
+  
   /* Create a new thread to execute with only the first word in file_name aka cmd. */
   tid = thread_create (name, PRI_DEFAULT, start_process, args); 
 
   if (tid == TID_ERROR)
     {
       palloc_free_page (fn_copy);
+      if (args->stdin_pipe != NULL)
+        pipe_drop_reader(args->stdin_pipe);
       free (args);
       free (cp);
       return TID_ERROR;
@@ -119,6 +126,8 @@ start_process (void *args_)
   bool success;
 
   cur->child_self = args->cp;
+  if (args->stdin_pipe != NULL)
+    fd_install_pipe_reader(cur, 0, args->stdin_pipe);
   free (args);
 
   char *argv[MAX_ARGS];
@@ -223,15 +232,9 @@ process_exit (void)
   if (cur->child_self != NULL)
     printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
+  fd_table_close_all(cur);
   lock_acquire (&filesys_lock);
-  for (int fd = 2; fd < 128; fd++)
-  {
-    if (cur->fd_table[fd] != NULL)
-    {
-      file_close (cur->fd_table[fd]);
-      cur->fd_table[fd] = NULL;
-    }
-  }
+
   if (cur->exec_file != NULL)
   {
     file_close (cur->exec_file);
