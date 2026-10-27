@@ -134,7 +134,6 @@ strtok() stores its continuation state in a static buffer, which is shared acros
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 thread.h:
-
   #define FD_MAX 128
     Size of each process's file descriptor table.
 
@@ -144,7 +143,8 @@ thread.h:
     int exit_status;                /* value passed to exit(), or -1 */
     struct fd_entry *fd_table[FD_MAX];
     struct file *exec_file;         /* our executable, kept open */
-  child_list/child_self implement wait and exec. fd_table holds the
+
+    child_list/child_self implement wait and exec. fd_table holds the
   open files. exec_file keeps writes to our own binary denied.
 
   struct child_info {
@@ -175,11 +175,46 @@ syscall.c:
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+Every struct thread carries a fixed array (struct fd_entry *fd_table[FD_MAX]), where FD_MAX is 128. Each non NULL slot points to a heap-allocated
+struct fd_entry {
+	enum fd_type;
+	struct file *file;
+	struct pipe *pipe;
+};
+where the fd_type enum are the following: FD_FILE, FD_PIPE_R, FD_PIPE_W.
+
+When we call sys_open(), the kernel calls filesys_open(), allocates (using malloc()) an
+fd_entry with fd_type as FD_FILE, scans fd_table from index 2 for the first NULL, installs the entry, and returns the index.
+
+pipe() installs two fd_entries, one for reader and one writer, pointing at the same struct pipe.
+
+get_entry(fd) returns fd_table and get_file(fd) returns the file only if fd_type == FD_FILE. 
+
+FDs 0 and 1 are conventionally for std input nad std output, so no fd_entry is ever installed in those indices.
+
+FDs are unique only within a single process: slot 3 in process A and slot 3 in process B are unrelated. Each table lives inside a different
+struct thread. So isolation is automatic.
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+Three primitives in syscall.c, all built on the byte-fault-fixup pair:
+
+get_user(uaddr) / put_user(uaddr, b): it is inline assembly {movl $1f, %0; movzbl %1, %0; 1:}.
+If the access faults, the CPU jumps to the fixup label and the function returns -1/false without ever taking a page fault in the kernel.
+
+read_user_byte → get_user, wrapping any fault into sys_exit(-1). read_user_word composes four read_user_bytes into a
+uint32_t. check_user_string(s) walks read_user_byte until it sees '\0'. Scalars on the syscall stack are read as read_user_word((uint32_t *)
+f->esp + n).
+
+check_user_buffer(buf, size, writable): it returns immediately on size == 0. Otherwise it first asserts is_user_vaddr(buf) and size ≤ PHYS_BASE - buf
+for overflow check. It then walks pages, at the start of each page it does a get_user, and, if writable, a put_user writing back the same byte to prove
+writability. Since Pintos pages are all or nothing, one successful get_user() at a page boundary proves the entire page is mapped
+
+Bulk copies are always preceded by a check_user_buffer call and then use the pointer directly. The kernel can dereference user virtual
+addresses because the process's page directory is active in CR3 during the syscall, and file_read/file_write/putbuf run under that pagedir.
+Any fault in the check phase kills the process via sys_exit(-1). The actual bulk copy is guaranteed not to fault.
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data to
 >> be copied from user space into the kernel.  What is the least
@@ -187,9 +222,30 @@ syscall.c:
 >> (e.g. calls to pagedir_get_page()) that might result?  What about
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
+We dont call pagedir_get_page(). We just inspect one byte per page with
+get_user() and the MMU does the page table walk.
+4,096 bytes: 1 if the buffer starts exactly on a page boundary, 2 otherwise (it always inspects two pages when it is not aligned).
+2 bytes: 1, or 2 if the two bytes straddle a page boundary.
+
+We dont see much room for improvement. One per page is the minimum
+that still checks every page. The naive version, checking every byte,
+would be 4,096 probes for the full page case.
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
+We named it sys_wait() in our implementation. sys_wait() calls process_wait(). process_execute() created a child_info for
+the child and pushed it on the parent's child_list, so process_wait()
+searches that list for the tid. If it is not there (not a child, or
+already waited for) it returns -1. Otherwise it does sema_down() on
+wait_sema, reads exit_status, removes the record from the list, frees
+it and returns the status.
+
+When a process ends, process_exit() prints "name: exit(n)", closes
+its files, then sets exit_status and is_exited in its child_info and
+does sema_up() on wait_sema. If the process was killed by an exception,
+kill() in exception.c sets exit_status to -1 first, so wait returns -1.
+Because the record is removed on the first wait, a second wait on the
+same pid finds nothing and returns -1.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -204,6 +260,27 @@ syscall.c:
 >> allocated resources (locks, buffers, etc.) are freed?  In a few
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
+We pushed all error handling into the helper functions. They
+call sys_exit(-1) when fails, so the code in each system call has no 
+"if (bad) return" lines. A call like
+sys_create() just starts with check_user_string(name) and then does
+its work as if the pointer were fine. Arguments come through the ARG()
+macro, which goes through read_user_word(), so even the stack pointer
+and the syscall number are checked the same way.
+
+Things must to: First, validate everything before
+acquiring a lock or allocating anything, so when the process dies at a
+check there is nothing of the system call to undo. Second, everything
+a process owns is released in process_exit(), which every
+termination path goes through (exit(), exceptions, failed load): open
+fds, the executable, the child records and the page directory.
+
+Example: write(fd, buf, n). The handler reads fd, buf and n with
+read_user_word(), then sys_write() calls check_user_buffer(buf, n,
+false). If buf is bad, we exit at that point with no lock held. Only
+after that do we take filesys_lock (or the pipe lock) and copy. A
+process can therefore never die holding filesys_lock because of a bad
+pointer.
 
 ---- SYNCHRONIZATION ----
 
@@ -211,6 +288,8 @@ syscall.c:
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
+We implemented child_info to have semaphore, load_sema that starts at 0 and a load_success flag. After thread_create(), process_execute() calls sema_down() on load_sema. The child's start_process() runs load(), stores the result
+in load_success, and does sema_up(). The failure paths (bad command line, too many arguments, load() fails..) all go through one helper, load_failed(), which also does the sema_up(), so the parent cannot get stuck. If load_success is false, exec returns -1.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -218,17 +297,74 @@ syscall.c:
 >> that all resources are freed in each case?  How about when P
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
+P waits before C exits: P blocks on wait_sema, C upped it in process_exit(). 
+P waits after C exits: the semaphore is already 1 and
+the exit status is stored in the child_info, which is still there, so
+wait returns right away. In both cases P frees the child_info.
+
+P exits without waiting: process_exit() goes through child_list and
+calls release_child() on each record. If the child is already
+exited, the record is freed. If not, the record is marked is_orphan.
+When that child exits later, process_exit() sees is_orphan and frees
+the record itself. The check of is_exited/is_orphan and the update of
+them are done with interrupts disabled, so the two sides cannot both
+decide to leave it for the other (a leak) or both free it.
+
+The struct thread page is freed by thread_schedule_tail() as usual,
+whatever the parent does. 
+A special case is a failed exec: the parent
+uses the same release_child() on it, because the child may or may not
+have finished exiting yet.
 
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
+We chose a two-tier design because the syscall mix has two very different access shapes:
+
+Scalars and strings of unknown length. A single byte fault fixup pair handles both without needing to know the length in advance, and the fixup catches every fault, null, kernel pointer, unmapped page, at the exact instruction that caused it.
+
+Bulk buffers (read/write data, console output). Walking with get_user per byte would be 4096 times more expensive than necessary.
+Instead, check_user_buffer walks page-by-page using one get_user per page. This is sufficient because Pintos pages are all or nothing,and then hands the raw pointer to file_read/file_write/putbuf. The kernel can safely dereference user virtual addresses during a syscall since the current thread's pagedir is active in CR3.
+
+The alternative is to temporarily map user pages into kernel virtual space. This wasn't used because it requires bookkeeping to unmap and would complicate the process's pagedir for no gain. The pagedir swap already happens on every context switch, so user VAs are directly usable from the kernel during the syscall.
+
 
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
+Three primitives in syscall.c, all built on the byte-fault-fixup pair:
+
+get_user(uaddr) / put_user(uaddr, b): it is inline assembly {movl $1f, %0; movzbl %1, %0; 1:}.
+If the access faults, the CPU jumps to the fixup label and the function returns -1/false without ever taking a page fault in the kernel.
+
+read_user_byte → get_user, wrapping any fault into sys_exit(-1). read_user_word composes four read_user_bytes into a
+uint32_t. check_user_string(s) walks read_user_byte until it sees '\0'. Scalars on the syscall stack are read as read_user_word((uint32_t *)
+f->esp + n).
+
+check_user_buffer(buf, size, writable): it returns immediately on size == 0. Otherwise it first asserts is_user_vaddr(buf) and size ≤ PHYS_BASE - buf
+for overflow check. It then walks pages, at the start of each page it does a get_user, and, if writable, a put_user writing back the same byte to prove
+writability. Since Pintos pages are all or nothing, one successful get_user() at a page boundary proves the entire page is mapped
+
+Bulk copies are always preceded by a check_user_buffer call and then use the pointer directly. The kernel can dereference user virtual
+addresses because the process's page directory is active in CR3 during the syscall, and file_read/file_write/putbuf run under that pagedir.
+Any fault in the check phase kills the process via sys_exit(-1). The actual bulk copy is guaranteed not to fault.
+
+Advantages:
+Uniform abstraction. struct fd_entry with a type tag lets read/write/close handle files and both pipe ends via a single switch.
+This simplifies adding pipe() without touching every syscall.
+
+O(1) lookup and isolation. Per-process array, no global translation table, no risk of one process closing another's fd.
+
+Disadvantages:
+Fixed capacity. FD_MAX = 128. an application that needs more must batch opens and closes.
+The design does not support fd duplication or flag manipulation.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+We kept the identity mapping. exec() returns the child's tid directly as its pid, and process_wait(pid) matches pid against cp->tid in child_list.
+The advantage is that there is no translation table. There are no mapping structure to maintain, so there are no separate pid pool. Hence no
+chance of orphaned mappings.
+
 
                SURVEY QUESTIONS
                ================
