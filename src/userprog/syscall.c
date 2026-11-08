@@ -57,7 +57,7 @@ struct fd_entry
 struct pipe
   {
     uint8_t buf[PIPE_CAPACITY];
-    size_t head;     
+    size_t head;
     size_t count;          
     int readers;           
     int writers; 
@@ -230,7 +230,6 @@ void sys_exit (int status)
 {
   struct thread *cur = thread_current ();
   cur->exit_status = status;
-  // printf ("%s: exit(%d)\n", cur->name, status);
   thread_exit ();
 }
 
@@ -581,7 +580,7 @@ fd_table_close_all (struct thread *t)
     if (t->fd_table[fd] != NULL)
       {
         struct fd_entry *e = t->fd_table[fd];
-        t->fd_table[fd] = NULL;
+        t->fd_table[fd] = NULL; //
         fd_entry_close (e);
       }
 }

@@ -303,7 +303,7 @@ hash_int (int i)
 
 /* Returns the bucket in H that E belongs in. */
 static struct list *
-find_bucket (struct hash *h, struct hash_elem *e) 
+find_bucket (struct hash *h, struct hash_elem *e)
 {
   size_t bucket_idx = h->hash (e, h->aux) & (h->bucket_cnt - 1);
   return &h->buckets[bucket_idx];

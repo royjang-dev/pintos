@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "fixed-point.h"
 #include "threads/synch.h" 
+#include <hash.h>
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -129,6 +130,11 @@ struct thread
    //  struct file *fd_table[128]; /* File descriptor table for this thread. */
     struct fd_entry *fd_table[FD_MAX]; /* File descriptor table for this thread. */
     struct file *exec_file; /* Executable file of this thread. */
+   #endif
+
+   #ifdef VM
+    struct hash spt;                    /* Supplemental page table. */
+    bool spt_ready;                      /* spt_init() succeeded. */
    #endif
 
     /* Owned by thread.c. */

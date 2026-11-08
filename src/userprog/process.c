@@ -19,6 +19,9 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/syscall.h"
+#ifdef VM
+#include "vm/page.h"
+#endif
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *file_name, int argc, char **argv, void (**eip) (void), void **esp);
@@ -30,9 +33,9 @@ static void load_failed (struct thread *cur, char *page) NO_RETURN;
 /* Passed from process_execute() to start_process(). */
 struct exec_args
 {
-  char *cmdline; 
-  struct child_info *cp;
-  struct pipe *stdin_pipe;
+  char *cmdline;
+  struct child_info *cp; // userprogram child info structure
+  struct pipe *stdin_pipe; // Pipe for standard input of the child process
 };
 
 /* Starts a new thread running a user program loaded from
@@ -42,16 +45,15 @@ struct exec_args
 tid_t
 process_execute (const char *file_name) 
 {
-  if (file_name == NULL || strlen (file_name) > PGSIZE)  //Checks file_name, if it's nullptr or bigger than 4kb
+  if (file_name == NULL || strlen (file_name) > PGSIZE)
     return TID_ERROR;
 
-  char name[16]; // Buffer for storing the extracted program name
-  int i = 0;
-  while (i < 15 && file_name[i] != '\0' && file_name[i] != ' ') {
-    name[i] = file_name[i];
-    i++;
-  }
-  name[i] = '\0';
+  char name[16];
+  char *save_ptr = NULL;
+  strlcpy (name, file_name, sizeof name);
+  char *token = strtok_r (name, " ", &save_ptr);
+  if (token == NULL)
+    return TID_ERROR;
 
   char *fn_copy;
   struct exec_args *args;
@@ -63,8 +65,7 @@ process_execute (const char *file_name)
   fn_copy = palloc_get_page(PAL_ZERO);
   if (fn_copy == NULL)
     return TID_ERROR;
-
-  strlcpy (fn_copy, file_name, PGSIZE); // Copy the file name into the allocated page
+  strlcpy (fn_copy, file_name, PGSIZE);
 
   args = malloc (sizeof *args);
   cp = malloc (sizeof *cp);
@@ -75,6 +76,7 @@ process_execute (const char *file_name)
       palloc_free_page (fn_copy);
       return TID_ERROR;
     }
+
   cp->exit_status = -1;
   cp->is_exited = false;
   cp->is_orphan = false;
@@ -89,7 +91,7 @@ process_execute (const char *file_name)
     pipe_add_reader(args->stdin_pipe);
   
   /* Create a new thread to execute with only the first word in file_name aka cmd. */
-  tid = thread_create (name, PRI_DEFAULT, start_process, args); 
+  tid = thread_create (token, PRI_DEFAULT, start_process, args); 
 
   if (tid == TID_ERROR)
     {
@@ -151,7 +153,11 @@ start_process (void *args_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  // success = load (file_name, &if_.eip, &if_.esp);
+  #ifdef VM
+    if (!spt_init (&cur->spt))
+      load_failed (cur, file_name);
+    cur->spt_ready = true;
+  #endif
   success = load (argv[0], argc, argv, &if_.eip, &if_.esp); 
 
   /* If load failed, quit. */
@@ -168,8 +174,6 @@ start_process (void *args_)
       sema_up (&cur->child_self->load_sema);
     }
   }
-  
-  // sema_up (&cur->child_self->load_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -250,6 +254,14 @@ process_exit (void)
     release_child (c);
   }
 
+  #ifdef VM
+    if (cur->spt_ready)
+    {
+      spt_destroy (&cur->spt);
+      cur->spt_ready = false;
+    }
+  #endif
+
   #ifdef USERPROG
   uint32_t *pd = cur->pagedir;
   if (pd != NULL) 
@@ -269,7 +281,7 @@ process_exit (void)
     cp->is_exited = true;
     bool orphan = cp->is_orphan;
     
-    sema_up (&cp->wait_sema); 
+    sema_up (&cp->wait_sema);
     intr_set_level (old);
     
     if (orphan)
@@ -370,7 +382,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, int argc, char **argv, void (**eip) (void), void **esp) 
+load (const char *file_name, int argc, char **argv, void (**eip) (void), void **esp)
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -500,7 +512,9 @@ load_failed (struct thread *cur, char *page)
 
 /* load() helpers. */
 
+#ifndef VM
 static bool install_page (void *upage, void *kpage, bool writable);
+#endif
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -578,6 +592,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
+#ifdef VM
+      /* Lazy loading: only record the page in the SPT. */
+      if (!spt_add_file_page (upage, file, ofs, page_read_bytes,
+                              page_zero_bytes, writable))
+        return false;
+#else
       /* Get a page of memory. */
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL)
@@ -597,10 +617,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
           palloc_free_page (kpage);
           return false; 
         }
+#endif
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
+      ofs += page_read_bytes;
       upage += PGSIZE;
     }
   return true;
@@ -611,14 +633,24 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp, int argc, char **argv)
 {
-  uint8_t *kpage;
+  uint8_t *stack_page = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
+#ifdef VM
+  success = spt_add_zero_page (stack_page, true)
+            && page_fault_load (stack_page, true);
+#else
+  uint8_t *kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  if (kpage != NULL)
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success) {
+      success = install_page (stack_page, kpage, true);
+      if (!success)
+        palloc_free_page (kpage);
+    }
+#endif
+  if (success)
+    {
+      {
         *esp = PHYS_BASE;
         uint8_t *sp = (uint8_t *) *esp;
 
@@ -673,8 +705,6 @@ setup_stack (void **esp, int argc, char **argv)
 
         *esp = sp;
       }
-      else
-        palloc_free_page (kpage);
     }
   return success;
 }
@@ -689,6 +719,7 @@ setup_stack (void **esp, int argc, char **argv)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
+#ifndef VM
 static bool
 install_page (void *upage, void *kpage, bool writable)
 {
@@ -699,6 +730,7 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
+#endif
 
 /* Releases a child_info structure.
    If the child has exited, it is freed.
