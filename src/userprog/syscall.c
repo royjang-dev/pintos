@@ -12,7 +12,9 @@
 #include "devices/input.h"
 #include "lib/limits.h"
 #include "threads/malloc.h"
-
+#ifdef VM
+#include "vm/page.h"
+#endif
 #define FD_MAX 128
 #define ARG(n) read_user_word ((uint32_t *) f->esp + (n))
 
@@ -36,6 +38,10 @@ static void sys_exit (int status);
 static void sys_close (int fd);
 static void sys_halt (void);
 static int sys_pipe (int pipefd[2]);
+#ifdef VM
+static int sys_mmap (int fd, void *addr);
+static void sys_munmap (int mapid);
+#endif
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 static int pipe_read (struct pipe *p, uint8_t *dst, unsigned size);
@@ -119,11 +125,32 @@ read_user_word (const void *uaddr)
   return v;
 }
 
-static void
+/* Validates the NUL-terminated user string S; returns its length including the NUL. */
+static size_t
 check_user_string (const char *s)
 {
-  for (const char *p = s; read_user_byte (p) != '\0'; p++)
-    continue;
+  const char *p = s;
+  while (read_user_byte (p) != '\0')
+    p++;
+  return p - s + 1;
+}
+
+/* Makes [BUF, BUF+SIZE) resident and unevictable so the kernel cannot fault on it while holding filesys_lock. Exits the process on failure. */
+static void
+pin_user (const void *buf UNUSED, size_t size UNUSED, bool write UNUSED)
+{
+#ifdef VM
+  if (!page_pin_range (buf, size, write))
+    sys_exit (-1);
+#endif
+}
+
+static void
+unpin_user (const void *buf UNUSED, size_t size UNUSED)
+{
+#ifdef VM
+  page_unpin_range (buf, size);
+#endif
 }
 
 /* Checks that a user buffer is valid for access.
@@ -154,6 +181,10 @@ static void
 syscall_handler (struct intr_frame *f) 
 {
   // validate_user_ptr (f->esp, sizeof(uint32_t));
+
+#ifdef VM
+  thread_current ()->user_esp = f->esp;
+#endif
 
   if (!is_user_vaddr (f->esp))
     sys_exit (-1);
@@ -215,10 +246,52 @@ syscall_handler (struct intr_frame *f)
     case SYS_PIPE:
       f->eax = sys_pipe ((int *) ARG(1));
       break;
+#ifdef VM
+    case SYS_MMAP:
+      f->eax = sys_mmap ((int) ARG(1), (void *) ARG(2));
+      break;
+    case SYS_MUNMAP:
+      sys_munmap ((int) ARG(1));
+      break;
+#endif
     default:
       sys_exit (-1);
   }
 }
+
+#ifdef VM
+static int
+sys_mmap (int fd, void *addr)
+{
+  if (fd < 2)
+    return -1;
+  struct file *f = get_file (fd);
+  if (f == NULL)
+    return -1;
+
+  lock_acquire (&filesys_lock);
+  struct file *mf = file_reopen (f);
+  off_t length = mf != NULL ? file_length (mf) : 0;
+  lock_release (&filesys_lock);
+  if (mf == NULL)
+    return -1;
+
+  int id = mmap_create (mf, addr, length);
+  if (id < 0)
+    {
+      lock_acquire (&filesys_lock);
+      file_close (mf);
+      lock_release (&filesys_lock);
+    }
+  return id;
+}
+
+static void
+sys_munmap (int mapid)
+{
+  mmap_destroy (mapid);
+}
+#endif
 
 static int sys_exec (const char *cmd)
 {
@@ -241,19 +314,23 @@ static void sys_halt (void)
 
 static bool sys_create (const char *name, unsigned size)
 {
-  check_user_string (name);
+  size_t n = check_user_string (name);
+  pin_user (name, n, false);
   lock_acquire (&filesys_lock);
   bool ok = filesys_create (name, size);
   lock_release (&filesys_lock);
+  unpin_user (name, n);
   return ok;
 }
 
 static bool sys_remove (const char *name)
 {
-  check_user_string (name);
+  size_t n = check_user_string (name);
+  pin_user (name, n, false);
   lock_acquire (&filesys_lock);
   bool ok = filesys_remove (name);
   lock_release (&filesys_lock);
+  unpin_user (name, n);
   return ok;
 }
 
@@ -267,10 +344,12 @@ static bool sys_remove (const char *name)
 static int
 sys_open (const char *name)
 {
-  check_user_string (name);
+  size_t n = check_user_string (name);
+  pin_user (name, n, false);
   lock_acquire (&filesys_lock);
   struct file *f = filesys_open (name);
   lock_release (&filesys_lock);
+  unpin_user (name, n);
   if (f == NULL)
     return -1;
 
@@ -320,9 +399,11 @@ sys_read (int fd, void *buf, unsigned size)
       return pipe_read (e->pipe, buf, size);
     case FD_FILE:
       {
+        pin_user (buf, size, true);
         lock_acquire (&filesys_lock);
         int n = file_read (e->file, buf, size);
         lock_release (&filesys_lock);
+        unpin_user (buf, size);
         return n;
       }
     default:  
@@ -361,9 +442,11 @@ static int sys_write (int fd, const void *buf, unsigned size)
 
     case FD_FILE:
       {
+        pin_user (buf, size, false);
         lock_acquire (&filesys_lock);
         int n = file_write (e->file, buf, size);
         lock_release (&filesys_lock);
+        unpin_user (buf, size);
         return n;
       }
 

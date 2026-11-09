@@ -135,6 +135,9 @@ struct thread
    #ifdef VM
     struct hash spt;                    /* Supplemental page table. */
     bool spt_ready;                      /* spt_init() succeeded. */
+    void *user_esp;                      /* User esp saved at syscall entry. */
+    struct list mmap_list;               /* Memory mappings of this process. */
+    int next_mapid;                      /* Next mapping id to hand out. */
    #endif
 
     /* Owned by thread.c. */

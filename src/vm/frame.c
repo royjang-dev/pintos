@@ -6,6 +6,7 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
 #include "vm/page.h"
 #include "vm/swap.h"
 
@@ -37,12 +38,12 @@ void *frame_alloc (struct page *p)
     return kpage;
 }
 
-/* Evict a frame to make room for page `p`. Returns the kernel page of the new frame. */
 static void *frame_evict (struct page *p)
 {
     lock_acquire (&frame_lock);
     struct frame *f = NULL;  
     struct page *v = NULL;
+    bool fs_taken = false;
     size_t limit = 2 * list_size (&frames) + 2;
 
     while (limit-- > 0 && !list_empty (&frames))
@@ -57,12 +58,28 @@ static void *frame_evict (struct page *p)
             v = NULL; 
             continue;
         }
+        if (v->pinned)
+        {
+            lock_release (&v->lock);
+            v = NULL;
+            continue;
+        }
         if (pagedir_is_accessed (v->owner->pagedir, v->upage))
         {
             pagedir_set_accessed (v->owner->pagedir, v->upage, false);
             lock_release (&v->lock);  
             v = NULL;
             continue;
+        }
+        if (v->kind == PAGE_MMAP && !lock_held_by_current_thread (&filesys_lock))
+        {
+            if (!lock_try_acquire (&filesys_lock))
+            {
+                lock_release (&v->lock);
+                v = NULL;
+                continue;
+            }
+            fs_taken = true;
         }
         break; // found a victim frame to evict
     }
@@ -74,7 +91,15 @@ static void *frame_evict (struct page *p)
     f->page = p;  p->frame = f;  v->frame = NULL;   /* frame now belongs to the new page */
     lock_release (&frame_lock);                     /* <- everything below is slow I/O */
 
-    if (dirty) v->swap_slot = swap_out (f->kpage);
+    if (dirty)
+    {
+        if (v->kind == PAGE_MMAP)
+            page_write_back (v, f->kpage);
+        else
+            v->swap_slot = swap_out (f->kpage);
+    }
+    if (fs_taken)
+        lock_release (&filesys_lock);
     lock_release (&v->lock);
     return f->kpage;
 }

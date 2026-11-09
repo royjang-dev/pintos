@@ -155,7 +155,8 @@ page_fault (struct intr_frame *f)
 
    #ifdef VM
    if (not_present && fault_addr != NULL && is_user_vaddr (fault_addr))
-      if (page_fault_load (fault_addr, write))
+      if (page_fault_load (fault_addr, write,
+                           user ? f->esp : thread_current ()->user_esp))
          return;
    #endif
 

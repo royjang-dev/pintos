@@ -156,6 +156,8 @@ start_process (void *args_)
   #ifdef VM
     if (!spt_init (&cur->spt))
       load_failed (cur, file_name);
+    list_init (&cur->mmap_list);
+    cur->next_mapid = 0;
     cur->spt_ready = true;
   #endif
   success = load (argv[0], argc, argv, &if_.eip, &if_.esp); 
@@ -257,6 +259,7 @@ process_exit (void)
   #ifdef VM
     if (cur->spt_ready)
     {
+      mmap_destroy_all ();
       spt_destroy (&cur->spt);
       cur->spt_ready = false;
     }
@@ -638,7 +641,7 @@ setup_stack (void **esp, int argc, char **argv)
 
 #ifdef VM
   success = spt_add_zero_page (stack_page, true)
-            && page_fault_load (stack_page, true);
+            && page_pin_range (stack_page, PGSIZE, true);
 #else
   uint8_t *kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL)
@@ -704,6 +707,9 @@ setup_stack (void **esp, int argc, char **argv)
         memcpy(sp, &fake_return, sizeof(fake_return));
 
         *esp = sp;
+#ifdef VM
+        page_unpin_range (stack_page, PGSIZE);
+#endif
       }
     }
   return success;
