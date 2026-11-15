@@ -18,9 +18,11 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/pte.h"
 #include "userprog/syscall.h"
 #ifdef VM
 #include "vm/page.h"
+#include "vm/frame.h"
 #endif
 
 static thread_func start_process NO_RETURN;
@@ -595,32 +597,67 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
+      if (read_bytes + zero_bytes >= HPGSIZE && ((uint32_t) pg_round_down(upage) & HPGMASK) == 0) {
+#ifdef VM
+	/* Huge page 4MB */
+        size_t hpage_read_bytes = read_bytes < HPGSIZE ? read_bytes : HPGSIZE;
+	size_t hpage_zero_bytes = HPGSIZE - hpage_read_bytes;
+
+	void *kpage = palloc_get_multiple (PAL_USER, HPGSIZE / PGSIZE);
+	if (kpage == NULL)
+	  return false;
+
+	file_seek (file, ofs);
+	if (file_read (file, kpage, hpage_read_bytes) != (int) hpage_read_bytes) {
+	  palloc_free_multiple (kpage, HPGSIZE / PGSIZE);
+	  return false;
+	}
+
+	memset ((uint8_t *) kpage + hpage_read_bytes, 0, hpage_zero_bytes);
+
+	struct thread *t = thread_current ();
+	size_t pd_idx = pd_no (upage);
+	uint32_t paddr = vtop (kpage);
+	uint32_t pde = (paddr & ~HPGMASK) | PTE_P | (writable ? PTE_W : 0) | PTE_U | PTE_PS;
+	t->pagedir[pd_idx] = pde;
+
+	frame_add_huge (kpage);	
+
+	read_bytes -= hpage_read_bytes;
+	zero_bytes -= hpage_zero_bytes;
+	ofs += hpage_read_bytes;
+	upage += HPGSIZE;
+	continue;
+#endif
+      }
+      else {
 #ifdef VM
       /* Lazy loading: only record the page in the SPT. */
       if (!spt_add_file_page (upage, file, ofs, page_read_bytes,
-                              page_zero_bytes, writable))
-        return false;
+			      page_zero_bytes, writable))
+	      return false;
 #else
       /* Get a page of memory. */
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL)
-        return false;
+	      return false;
 
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      {
+	      palloc_free_page (kpage);
+	      return false; 
+      }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
       if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      {
+	      palloc_free_page (kpage);
+	      return false; 
+      }
 #endif
+      }
 
       /* Advance. */
       read_bytes -= page_read_bytes;

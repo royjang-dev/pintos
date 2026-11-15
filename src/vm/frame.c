@@ -52,6 +52,11 @@ static void *frame_evict (struct page *p)
             hand = list_begin (&frames);
         f = list_entry (hand, struct frame, elem);
         hand = list_next (hand);
+
+	if (f->huge) {
+	    v = NULL;
+	    continue;
+	}
         v = f->page;
         if (!lock_try_acquire (&v->lock)) 
         { 
@@ -112,4 +117,18 @@ void frame_free (struct page *p)
     list_remove (&f->elem);
     lock_release (&frame_lock);
     palloc_free_page (f->kpage);  free (f);  p->frame = NULL;
+}
+
+void frame_add_huge (void *kpage)
+{
+    struct frame *f = malloc (sizeof *f);
+    if (f == NULL)
+        return;
+
+    f->kpage = kpage;
+    f->page = NULL;
+    f->huge = true;
+    lock_acquire (&frame_lock);
+    list_push_back (&frames, &f->elem);
+    lock_release (&frame_lock);
 }
