@@ -30,24 +30,105 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+In vm/page.h:
+struct page
+  {
+    void *upage;		/* User virutal page address */
+    enum page_kind kind;	/* Backing type: executable file, zero page, or mmap */
+    struct file *file;		/* Backing file pointer for PAGE_PILE and PAGE MMAP */
+    off_t ofs;			/* File offset where page data begins */
+    uint32_t read_bytes;	/* Number of bytes to read from file */
+    uint32_t zero_bytes;	/* Number of trailing bytes to zero-fill */
+    bool writable;		/* True if user process may write to this page */
+    struct thread *owner;	/* Thread that owns this supplemental page */
+    struct frame *frame;	/* Physical frame currently holding this page, or NULL */
+    size_t swap_slot;		/* Swap slot index if swapped out, else SWAP_NONE */
+    bool pinned;                /* Set under lock; eviction skips pinned pages. */
+    struct lock lock;           /* Held while this page is being loaded/evicted. */
+    struct hash_elem elem;	/* Hash table element for thread's SPT */
+  };
+
+In vm/frame.h:
+struct frame
+  {
+    void *kpage;		/* Kernel virtual address of allocated physical page */
+    struct page *page;		// page currently held in this frame
+    struct list_elem elem;	/* List element in global frames list */
+    bool huge;			/* True if frame represents an unswappable 4MB huge table */
+  };
+
+In vm/frame.c:
+static struct list frames;	/* Global list of allocated user frames for clock eviction */
+static struct list_elem *hand;	/* Clock hand pointer iterating through frames list */
+static struct lock frame_lock;	// Protects `frames` and `hand` only.
+
+In threads/thread.h:
+struct hash spt;                /* Supplemental page table. */
+bool spt_ready;                 /* spt_init() succeeded. */
+void *user_esp;                 /* User esp saved at syscall entry. */
+
 ---- ALGORITHMS ----
 
 >> A2: In a few paragraphs, describe your code for locating the frame,
 >> if any, that contains the data of a given page.
 
+Each process maintains a per thread supplemental_page_table mapping page-aligned user virutal addresses to struct page
+matadata entries. When a user memory access misses in the hardware page directory, pagedir, and triggers a page fault,
+the fault address is rounded down to a page boundary and looked up in the current thread's SPT.
+
+If no struct page entry exists, fault_load() checks is_stack_access(fault_addr, esp) to dertermine whether the fault is
+a valid stack growth access, if so, it dynamically inserts a new PAGE_ZERO entry into the SPT. Once struct page is
+retreived, we acquire p->lock and inspect p->frame. If p->frame is already non NULL, the page is already in physical
+memory. Otherwise, page_load(p) allocates a physical frame with frame_alloc(p) and adds to kpage from one of three sources
+depending on p's state: swapping back in via swap_in(p->swap_slot, kpage),if p->swap_slot != SWAP_NONE, reading
+p->read_bytes from p->file at p->ofs and zeroing p->zero_bytes for PAGE_FILE / PAGE_MMAP, or zeroing the full page,
+memset(kpage, 0, PGSIZE) for PAGE_ZERO. Finally, pagedir_set_page() installs the mapping in the hardware page table.
+
 >> A3: How does your code coordinate accessed and dirty bits between
 >> kernel and user virtual addresses that alias a single frame, or
 >> alternatively how do you avoid the issue?
+
+We check, and update accessed and dirty bits exclusively through the user virtual address v->upage in the owning process's
+page directory, and by performing all kernel-side frame initialization before installing the user mapping.
+
+Inside page_load(), the kernel reads file/swap data an zeroes trailing bytes using the kernel virutal address before calling
+pagedir_set_page(p->owner->pagedir, p->upage, kpage, p->writable). If a page was loaded from swap, pagedir_set_dirty() is
+explicitly called immediately after mapping so the kernel's swap-in write is never lost. During eviction in frame_evict(),
+accessed and dirty bits are queried and cleared.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: When two user processes both need a new frame at the same time,
 >> how are races avoided?
 
+Frame allocation and eviction are synchronized using a two-level locking hierarchy combining frame_lock and per-page locks.
+
+1. In frame_alloc(struct page *p), palloc_get_page(PAL_USER) is first called (which is internally synchronized by
+palloc's pool lock). If a free page is returned, a struct frame is allocated, linked to p, and inserted into frames
+while holding frame_lock.
+
+2. If physical user memory is exhausted (kpage == NULL), frame_evict(p) acquires frame_lock to scan frames with the
+clock hand. To avoid blocking or deadlocking with another thread currently faulting on or pinning a candidate page v,
+frame_evict() uses lock_try_acquire(&v->lock) and skips any page whose lock is contended or whose v->pinned flag is true.
+
+3. Once an unpinned, unaccessed victim v is selected, frame_evict() clears v->upage from v->owner->pagedir, reassigns
+f->page = p, p->frame = f, and v->frame = NULL atomically under frame_lock, and then releases frame_lock before performing
+slow swap or file write-back I/O. Thus, another process needing a frame can immediately run concurrently while the
+first process completes its I/O under v->lock.
+
 ---- RATIONALE ----
 
 >> A5: Why did you choose the data structure(s) that you did for
 >> representing virtual-to-physical mappings?
+1. Hash Table for the Supplemental Page Table.
+	A per-process hash table keyed by page-aligned upage provides O(1) average-case lookup during page faults and
+	system call buffer pinning without allocating memory for unmapped regions of the 32-bit virtual address space.
+
+2. Doubly-Linked List for the Frame Table.
+	A global circular list (frames paired with a hand iterator) directly models the clock replacement algorithm,
+	allowing O(1) insertion on frame allocation, O(1) removal in frame_free(), and sequential circular traversal
+	during frame_evict()
+
 
 		       PAGING TO AND FROM DISK
 		       =======================
@@ -57,6 +138,17 @@ FirstName LastName <email@domain.example>
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+
+In vm/swap.c:
+#define SECTORS_PER_PAGE (PGSIZE / BLOCK_SECTOR_SIZE)  /* Number of disk sectors per 4KB page (8) */
+static struct block *swap_dev;                         /* Block device representing the swap partition */
+static struct bitmap *swap_map;                        /* Bitmap tracking free (0) and used (1) swap slots */
+static struct lock swap_lock;                          /* Lock synchronizing swap_map slot allocation and freeing */
+
+In vm/page.c
+#define STACK_MAX (8 * 1024 * 1024)		/* Maximum allowed user stack size (8 MB) */
+#define STACK_SLACK 32				/* Allowed fault distance below esp for PUSHA (32B) */
+
 
 ---- ALGORITHMS ----
 
