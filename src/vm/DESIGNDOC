@@ -8,9 +8,8 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+Ben Do <bd1228@kaist.ac.kr>
+Seryong Jang <royjang1996@gmail.com>
 
 ---- PRELIMINARIES ----
 
@@ -154,6 +153,19 @@ In vm/page.c
 
 >> B2: When a frame is required but none is free, some frame must be
 >> evicted.  Describe your code for choosing a frame to evict.
+frame_evict() in vm/frame.c implements a global second-chance (clock) page replacement algorithm:
+
+1. Under frame_lock, the circular hand pointer advances through frames, wrapping from list_end(&frames) back to
+list_begin(&frames), for up to 2 * list_size(&frames) + 2 iterations.
+
+2. Huge page frames (f->huge == true) are skipped immediately because they are unswappable.
+
+3. For each candidate frame f and its resident page v = f->page, frame_evict() attempts lock_try_acquire(&v->lock).
+If the lock is held by another thread or v->pinned is true, the frame is skipped.
+
+4. pagedir_is_accessed(v->owner->pagedir, v->upage) is checked. If the accessed bit is 1, it is cleared to 0 (pagedir_set_accessed(..., false)), v->lock is released, and the clock hand advances, giving the page a second chance.
+
+5. If the accessed bit is 0 (and for PAGE_MMAP pages, filesys_lock can be acquired without blocking via lock_try_acquire(&filesys_lock)), v is chosen as the victim.
 
 >> B3: When a process P obtains a frame that was previously used by a
 >> process Q, how do you adjust the page table (and any other data
