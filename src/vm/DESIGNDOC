@@ -193,14 +193,46 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+In vm/page.h:
+enum page_kind { PAGE_FILE, PAGE_ZERO, PAGE_MMAP };
+PAGE_MMAP is new: page backed by an mmap'd file, written back to that file on eviction.
+
+In vm/page.c:
+struct mmap_entry
+  {
+    int id;			/* Mapping id returned by mmap(), unique within the process */
+    struct file *file;		/* Private handle from file_reopen(), closed on munmap */
+    void *addr;			/* Page-aligned start address of the mapping */
+    size_t page_cnt;		/* Number of consecutive pages covered by the mapping */
+    struct list_elem elem;	/* List element in the owner's mmap_list */
+  };
+
+In threads/thread.h:
+struct list mmap_list;		/* Memory mappings of this process, one mmap_entry each */
+int next_mapid;			/* Next mapping id to hand out */
+
 ---- ALGORITHMS ----
 
 >> C2: Describe how memory mapped files integrate into your virtual
 >> memory subsystem.  Explain how the page fault and eviction
 >> processes differ between swap pages and other pages.
+mmap() opens the file with file_reopen() and then adds one of SPT entry of kind PAGE_MMAP for each page of the file, so nothing is read until the page is touched. Each entry records the file, the offset and read_bytes. The last page has read_bytes smaller than PGSIZE, and the rest is zero_bytes. A struct mmap_entry in the thread's mmap_list remembers the id, the address range and the reopened file.
+
+Page fault: a PAGE_MMAP page goes through the same fault_load() and page_load() as everything else. page_load() sees PAGE_MMAP, reads read_bytes from the file with file_read_at(), and zeroes the tail, so the bytes past the end of the file are zero when the page comes in. It never has a swap slot, so the swap_in branch is not taken.
+
+Eviction: frame_evict() clears the victim's PTE and reads the dirty bit. A dirty PAGE_MMAP page is written back with page_write_back(), which calls file_write_at() for read_bytes bytes only, so the zero tail is dropped. A clean one is just dropped and read from the file again on the next fault. A dirty page of any other kind goes to swap with swap_out() and gets a swap_slot. A clean PAGE_FILE or PAGE_ZERO page is also dropped and rebuilt from the executable or by zeroing. When a page comes back from swap, swap_in() frees the slot and page_load() marks the page dirty, because the swap copy is gone.
+
+Since a write-back needs filesys_lock, frame_evict() only uses lock_try_acquire() on it and skips the victim if the lock is busy.
+
+munmap() and process exit both call page_release() on every page of the mapping. It writes back only the dirty pages that are still resident, clears the PTE, frees the frame, removes the entry from the SPT, and then closes the reopened file. mmap_destroy_all() runs in process_exit() before spt_destroy() and before the page directory is freed.
 
 >> C3: Explain how you determine whether a new file mapping overlaps
 >> any existing segment.
+mmap_create() first rejects addr == NULL, an address that is not page-aligned, a zero-length file, and a range that would run past PHYS_BASE. It then walks every page of the requested range, addr + i * PGSIZE, and calls spt_find() on the current thread's SPT. If any page already has an entry, mmap_create() returns -1 and nothing has been changed yet.
+
+This one check covers every kind of overlap, because every page the process can use is in the SPT: executable segments (added lazily by load_segment()), the first stack page (added in setup_stack()), pages that grew the stack, and earlier mmap regions. Pages are only added after the whole range has passed the check. If spt_add_page() fails part way, for example when malloc() fails, the pages added so far are removed again, so a failed mmap() leaves the process's mappings unchanged.
+
+A stack page that has not been touched yet has no entry, so mmap() can take that address. The 8 MB stack limit is not reserved against mmap().
 
 ---- RATIONALE ----
 
@@ -210,6 +242,11 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> that much of their implementation can be shared.  Explain why your
 >> implementation either does or does not share much of the code for
 >> the two situations.
+We share most of it. Both kinds of page are the same struct page in the same SPT, and both are created by spt_add_page(), which only differs in the kind it is given. A PAGE_MMAP page is loaded by the same page_load() branch as a PAGE_FILE page (file_read_at() plus zero fill), and it uses the same frame_alloc(), frame_evict(), pinning and page_release() code. So the lazy loading and the frame handling are written only once.
+
+The code that differs is small and sits in two places. When a dirty page is evicted, frame_evict() writes a PAGE_MMAP page back to its file with page_write_back() and gives every other kind a swap slot. We need the kind flag for this, because an executable's data page is a private copy and must not change the executable. The second difference is the bookkeeping. mmap pages need a struct mmap_entry so that munmap() can find them, and a reopened file that is closed after the last page is released.
+
+Giving mmap its own code path for loading would only have duplicated page_load().
 
 			   SURVEY QUESTIONS
 			   ================
