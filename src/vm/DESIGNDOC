@@ -15,6 +15,13 @@ Seryong Jang <royjang1996@gmail.com>
 
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
+Extra credit: 4 MB huge pages (Task 5).
+
+In load_segment(), if the rest of a segment is at least HPGSIZE (4 MB) and upage is aligned to 4 MB, we do not create 1024 small SPT entries. We take 1024 contiguous frames with palloc_get_multiple(), read the file data into them (zero-filling the rest), and write one page directory entry with the PTE_PS bit set, so that a single entry maps the 4 MB. The new constants HPGBITS, HPGSIZE, HPGMASK are in threads/vaddr.h and PTE_PS is in threads/pte.h.
+
+The huge region is registered with frame_add_huge() as a struct frame with huge = true. frame_evict() skips these frames, so they are never swapped out. pagedir_destroy() sees PTE_PS and frees the whole block with palloc_free_multiple() instead of walking a page table.
+
+This is loaded eagerly, not on demand, and is not evictable. A segment smaller than 4 MB, or one that is not aligned, still uses the normal lazy 4 KB pages. We changed the buffer in tests/vm/page-linear.c to 4 MB so that it uses a huge page.
 
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
