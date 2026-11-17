@@ -20,7 +20,7 @@ struct page
 {
   void *upage;
   enum page_kind kind;
-  struct file *file;  
+  struct file *file;
   off_t ofs;
   uint32_t read_bytes;
   uint32_t zero_bytes;

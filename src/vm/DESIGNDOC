@@ -71,9 +71,7 @@ void *user_esp;                 /* User esp saved at syscall entry. */
 >> A2: In a few paragraphs, describe your code for locating the frame,
 >> if any, that contains the data of a given page.
 
-Each process maintains a per thread supplemental_page_table mapping page-aligned user virutal addresses to struct page
-matadata entries. When a user memory access misses in the hardware page directory, pagedir, and triggers a page fault,
-the fault address is rounded down to a page boundary and looked up in the current thread's SPT.
+Each process maintains a per thread supplemental_page_table mapping page-aligned user virutal addresses to struct page matadata entries. When a user memory access misses in the hardware page directory, pagedir, and triggers a page fault, the fault address is rounded down to a page boundary and looked up in the current thread's SPT.
 
 If no struct page entry exists, fault_load() checks is_stack_access(fault_addr, esp) to dertermine whether the fault is
 a valid stack growth access, if so, it dynamically inserts a new PAGE_ZERO entry into the SPT. Once struct page is
@@ -153,7 +151,6 @@ In vm/page.c
 
 >> B2: When a frame is required but none is free, some frame must be
 >> evicted.  Describe your code for choosing a frame to evict.
-
 frame_evict() in vm/frame.c implements a global second-chance (clock) page replacement algorithm:
 
 1. Under frame_lock, the circular hand pointer advances through frames, wrapping from list_end(&frames) back to
@@ -172,36 +169,9 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> process Q, how do you adjust the page table (and any other data
 >> structures) to reflect the frame Q no longer has?
 
-While holding frame_lock and Q's page lock:
-
-1. pagedir_clear_page(), unmaps Q's virtual page from Q's hardware page directory so subsequent accesses by Q trigger a
-page fault.
-
-2. pagedir_is_dirty() is sampled after clearing the PTE to ensure no concurrent write by Q between the dirty check and
-unmap is missed.
-
-3. Ownership pointers are updated automatically.
-
-4. frame_lock is released, and if dirty is true, the frame's old content are written out before P reuses kernel page.
-
-5. The lock is released, and P's page_load() overwrites f->kpage with P's data and maps P's upage in P's page directory.
-
 >> B4: Explain your heuristic for deciding whether a page fault for an
 >> invalid virtual address should cause the stack to be extended into
 >> the page that faulted.
-
-is_stack_access() in vm/page.c validates three conditions before growing the stack:
-
-1. esp != NULL && is_user_vaddr(fault_addr)
-	The saved user stack pointer is valid and the faulting address lies in user space below PHYS_BASE.
-
-2. fault_addr >= (uint8_t *) PHYS_BASE - STACK_MAX
-	The fault address does not exceed the 8 MB maximum stack size limit (STACK_MAX = 8 * 1024 * 1024).
-
-3. (uint8_t *) fault_addr + STACK_SLACK >= (uint8_t *) esp
-	The fault address is at or above esp - 32 (STACK_SLACK = 32). This accommodates x86 PUSH, faults 4 bytes below esp,
-	and PUSHA, faults 32 bytes below esp, instructions, which check memory permissions before decrementing %esp,
-	while rejecting wild pointer accesses further below the stack pointer.
 
 ---- SYNCHRONIZATION ----
 
@@ -220,17 +190,11 @@ is_stack_access() in vm/page.c validates three conditions before growing the sta
 >> cannot interfere by e.g. attempting to evict the frame while it is
 >> still being read in?
 
-Process P acquires p->lock at the start of fault_load() and holds p->lock throughout frame_alloc(p) and the
-entire page_load(p) operation, including swap_in() or file_read_at() and pagedir_set_page(). When frame_alloc(p)
-inserts the new frame f into the global frames list with f->page = p, p->lock is already held by P. If process Q runs
-frame_evict() concurrently and the clock hand encounters f, lock_try_acquire(&p->lock) returns false, causing Q to skip f.
-
 >> B8: Explain how you handle access to paged-out pages that occur
 >> during system calls.  Do you use page faults to bring in pages (as
 >> in user programs), or do you have a mechanism for "locking" frames
 >> into physical memory, or do you use some other design?  How do you
 >> gracefully handle attempted accesses to invalid virtual addresses?
-
 
 ---- RATIONALE ----
 
@@ -241,14 +205,6 @@ frame_evict() concurrently and the clock hand encounters f, lock_try_acquire(&p-
 >> where your design falls along this continuum and why you chose to
 >> design it this way.
 
-Our design uses a single global frame_lock strictly for fast in-memory list/hand pointer updates, paired with per-page
-locks that protect slow disk and swap I/O.
-
-We chose this design because holding a single global VM lock across file_read_at() or swap_out() would serialize all
-faulting processes behind slow block I/O. By releasing frame_lock immediately after unmapping the victim PTE and
-reassigning struct frame ownership, two processes can concurrently read/write their respective pages to swap or disk.
-
-
 			 MEMORY MAPPED FILES
 			 ===================
 
@@ -257,21 +213,6 @@ reassigning struct frame ownership, two processes can concurrently read/write th
 >> C1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
-
-In vm/page.c
-struct mmap_entry
-{
-  int id;                       /* Unique per-process mapping identifier (mapid_t) */
-  struct file *file;            /* Reopened independent file handle for this mapping */
-  void *addr;                   /* Starting page-aligned user virtual address of mapping */
-  size_t page_cnt;              /* Total number of consecutive virtual pages mapped */
-  struct list_elem elem;        /* List element in thread's mmap_list */
-};
-
-In threads/thread.h
-struct list mmap_list;          /* List of active memory-mapped file entries for this thread */
-int next_mapid;                 /* Monotonically increasing counter for assigning mapids */
-
 
 ---- ALGORITHMS ----
 
