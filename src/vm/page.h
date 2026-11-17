@@ -17,21 +17,21 @@ struct thread;
 enum page_kind { PAGE_FILE, PAGE_ZERO, PAGE_MMAP };
 
 struct page
-  {
-    void *upage;
-    enum page_kind kind;
-    struct file *file;  
-    off_t ofs;
-    uint32_t read_bytes;
-    uint32_t zero_bytes;
-    bool writable;
-    struct thread *owner;
-    struct frame *frame;
-    size_t swap_slot;
-    bool pinned;                /* Set under lock; eviction skips pinned pages. */
-    struct lock lock;           /* Held while this page is being loaded/evicted. */
-    struct hash_elem elem;
-  };
+{
+  void *upage;
+  enum page_kind kind;
+  struct file *file;  
+  off_t ofs;
+  uint32_t read_bytes;
+  uint32_t zero_bytes;
+  bool writable;
+  struct thread *owner;
+  struct frame *frame;
+  size_t swap_slot;
+  bool pinned;                /* Set under lock; eviction skips pinned pages. */
+  struct lock lock;           /* Held while this page is being loaded/evicted. */
+  struct hash_elem elem;
+};
 
 bool spt_init (struct hash *spt);
 void spt_destroy (struct hash *spt);
