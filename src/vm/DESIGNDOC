@@ -148,9 +148,13 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> process Q, how do you adjust the page table (and any other data
 >> structures) to reflect the frame Q no longer has?
 
+frame_evict() works on Q's struct page v while holding v->lock. It calls pagedir_clear_page() on Q's page directory for v->upage, so the next access by Q faults. Then it reads the dirty bit and sets v->frame = NULL. The same struct frame is reused for P: f->page = p and p->frame = f. If the page was dirty, its contents go to a swap slot (v->swap_slot) or, for PAGE_MMAP, back to the file. A clean page is dropped. P's own mapping is installed afterwards by pagedir_set_page() in page_load().
+
 >> B4: Explain your heuristic for deciding whether a page fault for an
 >> invalid virtual address should cause the stack to be extended into
 >> the page that faulted.
+
+A fault address with no SPT entry grows the stack only if is_stack_access() accepts it: the address is a user address, it is not more than STACK_MAX (8 MB) below PHYS_BASE, and fault_addr + 32 >= esp. The 32 bytes of slack allow for PUSHA, which faults up to 32 bytes below esp (PUSH faults 4 bytes below). For a fault from user mode esp is f->esp. For a fault in the kernel, f->esp is not the user stack pointer, so we use thread->user_esp, which syscall_handler() saves on entry. If esp is NULL we never grow the stack. A grown page is a writable PAGE_ZERO entry, so it can be swapped out like any other page.
 
 ---- SYNCHRONIZATION ----
 
@@ -159,21 +163,33 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> textbook for an explanation of the necessary conditions for
 >> deadlock.)
 
+There are four kinds of locks: frame_lock (frames list and clock hand, no I/O under it), one lock per page (held while the page is loaded, evicted or released), swap_lock (swap bitmap only) and filesys_lock. The page lock is what makes loading and evicting one page exclusive.
+
+We avoid hold-and-wait in the eviction path. frame_evict() holds frame_lock but only calls lock_try_acquire() on a victim's page lock and on filesys_lock, and skips the victim if either is busy. The slow swap and file I/O happens after frame_lock is released. A thread that already holds filesys_lock does not take it again, because page_load() and page_write_back() check lock_held_by_current_thread() first. Pinning (see B8) means the kernel does not fault on user buffers while holding filesys_lock. This also removes the case where a thread holding filesys_lock waits for frame_lock while an evictor holding frame_lock waits for filesys_lock.
+
 >> B6: A page fault in process P can cause another process Q's frame
 >> to be evicted.  How do you ensure that Q cannot access or modify
 >> the page during the eviction process?  How do you avoid a race
 >> between P evicting Q's frame and Q faulting the page back in?
+
+The evictor takes v->lock before it does anything to the victim, and the first thing it does is pagedir_clear_page(), so Q cannot touch the page any more. If Q accesses it, Q faults, and fault_load() blocks on v->lock. The evictor releases v->lock only after the data is in swap or in the file and v->frame is NULL. When Q gets the lock it sees no frame and reads the page back from where it was just written. So Q never sees a half-written page and never reads before the write finished.
 
 >> B7: Suppose a page fault in process P causes a page to be read from
 >> the file system or swap.  How do you ensure that a second process Q
 >> cannot interfere by e.g. attempting to evict the frame while it is
 >> still being read in?
 
+fault_load() holds the page's own lock for the whole of page_load(). frame_alloc() links the frame to the page early, so the frame is already on the frames list while the data is being read. But an evictor can only choose a frame by lock_try_acquire() on its page lock, which fails while the page is being read in, so it skips that frame. The page is also not mapped in the page directory until the read is finished.
+
 >> B8: Explain how you handle access to paged-out pages that occur
 >> during system calls.  Do you use page faults to bring in pages (as
 >> in user programs), or do you have a mechanism for "locking" frames
 >> into physical memory, or do you use some other design?  How do you
 >> gracefully handle attempted accesses to invalid virtual addresses?
+
+We pin. Before read(), write(), create(), remove() and open() take filesys_lock, pin_user() calls page_pin_range() on the buffer or the file name. For every page it covers, fault_load() makes the page resident, growing the stack if needed, and sets p->pinned under the page lock, which is the lock the evictor takes. So there is no window between loading and pinning. frame_evict() skips pinned pages. After the file operation, unpin_user() clears the flags. The lock is then taken with all the pages already resident, so the kernel does not fault while holding it.
+
+An invalid address is not found in the SPT and does not look like a stack access, so page_pin_range() returns false and the syscall calls sys_exit(-1). The same happens if a read() would write to a read-only page. If pinning fails halfway, the pages pinned so far are unpinned again. The earlier get_user() and put_user() checks also end in sys_exit(-1) when the fault handler cannot resolve the access.
 
 ---- RATIONALE ----
 
@@ -183,6 +199,8 @@ If the lock is held by another thread or v->pinned is true, the frame is skipped
 >> possibility for deadlock but allows for high parallelism.  Explain
 >> where your design falls along this continuum and why you chose to
 >> design it this way.
+
+We are in the middle. There is one global frame_lock, but it only protects the frames list and the clock hand, and it is never held during I/O, so it is held for a very short time. The long operations, such as swap and file I/O, are protected by the per-page lock, so two processes can fault and evict different pages at the same time. The swap bitmap has its own lock. We did not want a lock per frame or a lock for each swap slot, because more lock types would give more orderings to check for deadlock. Using lock_try_acquire() for the page lock and filesys_lock inside the eviction loop gave us the parallelism without waiting on a lock while holding frame_lock.
 
 			 MEMORY MAPPED FILES
 			 ===================
